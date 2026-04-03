@@ -1,0 +1,54 @@
+Issue Type,Summary,Description,Priority,Labels,Epic Name,Epic Link,Story Points,Sprint,Fix Version
+Epic,EPIC-01 Platform Foundation,Establish secure deployable baseline for all services,Highest,"platform,devops,security",EPIC-01 Platform Foundation,,,Sprint 1,Release 1.0
+Epic,EPIC-02 Conversational Core,Deliver HR assistant chat and orchestration,Highest,"chat,backend,ai",EPIC-02 Conversational Core,,,Sprint 2,Sprint 3
+Epic,EPIC-03 RAG Knowledge System,Ground answers in policy documents,Highest,"rag,ai,backend",EPIC-03 RAG Knowledge System,,,Sprint 2,Sprint 3
+Epic,EPIC-04 HR Automation and Ticketing,Automate FAQ and escalate unresolved requests,Highest,"hr,automation,ticketing",EPIC-04 HR Automation and Ticketing,,,Sprint 3,Sprint 4
+Epic,EPIC-05 Employee Insight,Sentiment surveys and anonymous feedback,High,"analytics,ml,surveys",EPIC-05 Employee Insight,,,Sprint 4,Sprint 5
+Epic,EPIC-06 Productivity Integrations,Calendar and room booking capabilities,High,"integrations,calendar,rooms",EPIC-06 Productivity Integrations,,,Sprint 6,Sprint 7
+Epic,EPIC-07 Analytics and Risk Signals,Dashboard KPI tracking and attrition alerts,High,"analytics,dashboard,risk",EPIC-07 Analytics and Risk Signals,,,Sprint 7,Sprint 8
+Epic,EPIC-08 Security Quality and Launch,Hardening testing UAT and launch operations,Highest,"security,qa,release",EPIC-08 Security Quality and Launch,,,Sprint 8,Release 1.0
+Story,US-001 Set up mono-repo and standards,Initialize backend frontend structure lint formatter and PR templates,High,"backend,frontend,platform",,EPIC-01 Platform Foundation,3,Sprint 1,Release 1.0
+Story,US-002 CI pipeline,Build and test workflow on pull requests,High,"devops,platform",,EPIC-01 Platform Foundation,5,Sprint 1,Release 1.0
+Story,US-003 CD pipeline to staging,Deploy services to staging cluster from main branch,High,"devops,platform",,EPIC-01 Platform Foundation,8,Sprint 1,Release 1.0
+Story,US-004 Provision data stores,Provision PostgreSQL Redis and vector database with secrets,High,"backend,platform,data",,EPIC-01 Platform Foundation,5,Sprint 1,Release 1.0
+Story,US-005 Auth baseline,Implement JWT RBAC and token refresh,High,"security,backend",,EPIC-01 Platform Foundation,8,Sprint 1,Release 1.0
+Story,US-006 Observability baseline,Enable structured logs metrics tracing and baseline alerts,Medium,"devops,observability",,EPIC-01 Platform Foundation,5,Sprint 1,Release 1.0
+Story,US-101 Chat session APIs,Create start end conversation and context APIs,High,"backend,chat",,EPIC-02 Conversational Core,5,Sprint 2,Release 1.0
+Story,US-102 Intent classification service,Detect supported HR intents with confidence score,High,"ai,chat",,EPIC-02 Conversational Core,8,Sprint 2,Release 1.0
+Story,US-103 Prompt orchestration,Create safe role aware prompt templates,High,"ai,chat,safety",,EPIC-02 Conversational Core,5,Sprint 2,Release 1.0
+Story,US-104 Clarification flow,Ask follow up questions when confidence is low,High,"chat,ux",,EPIC-02 Conversational Core,3,Sprint 2,Release 1.0
+Story,US-105 Channel adapter web,Connect web client chat stream to backend APIs,High,"frontend,chat",,EPIC-02 Conversational Core,5,Sprint 2,Release 1.0
+Story,US-201 Document ingestion pipeline,Upload and parse policy documents from PDF and DOCX,High,"rag,backend",,EPIC-03 RAG Knowledge System,8,Sprint 2,Release 1.0
+Story,US-202 Chunking and embeddings,Create chunks vectors and metadata for retrieval,High,"rag,ai",,EPIC-03 RAG Knowledge System,8,Sprint 2,Release 1.0
+Story,US-203 Retrieval service,Implement top k similarity search retrieval API,High,"rag,backend",,EPIC-03 RAG Knowledge System,5,Sprint 3,Release 1.0
+Story,US-204 Citation support,Return source references for generated answers,High,"rag,ai",,EPIC-03 RAG Knowledge System,3,Sprint 3,Release 1.0
+Story,US-205 Document versioning controls,Track active and inactive policy document versions,Medium,"rag,governance",,EPIC-03 RAG Knowledge System,5,Sprint 4,Release 1.0
+Story,US-301 Leave balance workflow,Implement leave balance query and response template,High,"hr,backend",,EPIC-04 HR Automation and Ticketing,5,Sprint 3,Release 1.0
+Story,US-302 FAQ automation flow,Handle policy benefits and payroll FAQ flows,High,"hr,ai,rag",,EPIC-04 HR Automation and Ticketing,8,Sprint 3,Release 1.0
+Story,US-303 Low confidence fallback,Create ticket when confidence is below threshold,High,"hr,ticketing,ai",,EPIC-04 HR Automation and Ticketing,5,Sprint 3,Release 1.0
+Story,US-304 Ticket lifecycle API,Support create assign escalate close ticket operations,High,"ticketing,backend",,EPIC-04 HR Automation and Ticketing,8,Sprint 3,Release 1.0
+Story,US-305 SLA rules engine,Apply category and severity based SLA policy,Medium,"ticketing,backend",,EPIC-04 HR Automation and Ticketing,5,Sprint 4,Release 1.0
+Story,US-306 Email drafting module,Generate leave follow up and complaint email drafts,Medium,"hr,ai,email",,EPIC-04 HR Automation and Ticketing,5,Sprint 3,Release 1.0
+Story,US-401 Sentiment scoring,Score chat and survey text sentiment class,High,"ml,analytics",,EPIC-05 Employee Insight,8,Sprint 4,Release 1.0
+Story,US-402 Pulse survey module,Create schedule and send pulse surveys,High,"surveys,backend",,EPIC-05 Employee Insight,8,Sprint 4,Release 1.0
+Story,US-403 Lifecycle survey templates,Add onboarding probation and exit templates,Medium,"surveys,product",,EPIC-05 Employee Insight,5,Sprint 4,Release 1.0
+Story,US-404 Anonymous feedback API,Build privacy safe anonymous feedback endpoint,High,"privacy,backend",,EPIC-05 Employee Insight,8,Sprint 5,Release 1.0
+Story,US-405 HR risk alerts,Trigger alerts for worsening sentiment trends,Medium,"analytics,alerts",,EPIC-05 Employee Insight,5,Sprint 4,Release 1.0
+Story,US-406 Attrition prototype model,Build baseline attrition risk signal model,Medium,"ml,analytics",,EPIC-05 Employee Insight,8,Sprint 5,Release 1.0
+Story,US-501 Primary calendar provider adapter,Integrate calendar create read events via provider registry,High,"integrations,calendar",,EPIC-06 Productivity Integrations,8,Sprint 6,Release 1.0
+Story,US-502 Secondary calendar provider adapter,Add additional provider support using existing adapter contract,High,"integrations,calendar",,EPIC-06 Productivity Integrations,8,Sprint 6,Release 1.0
+Story,US-503 Availability and conflicts,Check free busy and suggest alternatives,High,"calendar,backend",,EPIC-06 Productivity Integrations,5,Sprint 6,Release 1.0
+Story,US-504 Meeting room inventory sync,Sync room catalog capacity and facilities,Medium,"integrations,rooms",,EPIC-06 Productivity Integrations,5,Sprint 7,Release 1.0
+Story,US-505 Room booking API,Reserve room and prevent conflicts,High,"rooms,backend",,EPIC-06 Productivity Integrations,8,Sprint 7,Release 1.0
+Story,US-506 Booking notifications,Send confirmations reminders and updates,Medium,"rooms,notifications",,EPIC-06 Productivity Integrations,3,Sprint 7,Release 1.0
+Story,US-601 KPI aggregation jobs,Aggregate resolution SLA engagement and sentiment metrics,High,"analytics,backend",,EPIC-07 Analytics and Risk Signals,8,Sprint 5,Release 1.0
+Story,US-602 Dashboard APIs,Provide filterable analytics APIs for admin dashboard,High,"analytics,backend",,EPIC-07 Analytics and Risk Signals,5,Sprint 5,Release 1.0
+Story,US-603 Admin dashboard UI,Implement HR admin dashboard screens,High,"analytics,frontend",,EPIC-07 Analytics and Risk Signals,8,Sprint 7,Release 1.0
+Story,US-604 Attrition signal panel,Display risk levels trends and reason codes,Medium,"analytics,ml",,EPIC-07 Analytics and Risk Signals,5,Sprint 8,Release 1.0
+Story,US-605 Data quality checks,Validate KPI consistency completeness and freshness,Medium,"analytics,qa",,EPIC-07 Analytics and Risk Signals,3,Sprint 8,Release 1.0
+Story,US-701 API security hardening,Add rate limits abuse controls and secure headers,High,"security,backend",,EPIC-08 Security Quality and Launch,5,Sprint 6,Release 1.0
+Story,US-702 Test automation suite,Implement unit integration and end to end smoke tests,High,"qa,automation",,EPIC-08 Security Quality and Launch,8,Sprint 6,Release 1.0
+Story,US-703 Load and resilience testing,Run concurrency stress and failure mode tests,Medium,"qa,performance",,EPIC-08 Security Quality and Launch,5,Sprint 7,Release 1.0
+Story,US-704 UAT execution,Run pilot validation with HR stakeholders,High,"qa,product",,EPIC-08 Security Quality and Launch,5,Sprint 8,Release 1.0
+Story,US-705 Production runbooks,Create rollback incident and on-call runbooks,High,"devops,release",,EPIC-08 Security Quality and Launch,3,Sprint 8,Release 1.0
+Story,US-706 Go live and hypercare,Execute launch and two week hypercare monitoring,High,"release,operations",,EPIC-08 Security Quality and Launch,5,Sprint 8,Release 1.0
