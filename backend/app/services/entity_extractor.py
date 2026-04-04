@@ -18,7 +18,7 @@ class EntityExtractor:
     Supports slot filling for different flow types.
     """
     
-    TICKET_FIELDS = ["department", "issue", "severity", "anonymous"]
+    TICKET_FIELDS = ["department", "issue", "severity", "anonymous", "against", "timeline", "details"]
     LEAVE_FIELDS = ["leave_type", "start_date", "end_date", "reason"]
     
     def __init__(self, use_mock: bool = False):
@@ -40,8 +40,11 @@ Return ONLY a JSON object with these fields (null if not mentioned):
 - issue: brief description of the problem (or null if unclear)
 - severity: "low", "medium", "high", "critical", or null  
 - anonymous: true/false (whether they want to stay anonymous)
+- against: who the complaint is about (person's name/role) or null
+- timeline: when the issue started (brief description) or null
+- details: additional context or background information or null
 
-Example: {{"department": "HR", "issue": "manager not respecting work", "severity": "medium", "anonymous": false}}
+Example: {{"department": "HR", "issue": "manager not respecting work hours", "severity": "medium", "anonymous": false, "against": "team lead", "timeline": "last week", "details": "always making me stay late"}}
 
 Return ONLY the JSON, no other text."""
 
@@ -63,7 +66,10 @@ Return ONLY the JSON, no other text."""
                 "department": result.get("department"),
                 "issue": result.get("issue"),
                 "severity": result.get("severity"),
-                "anonymous": result.get("anonymous")
+                "anonymous": result.get("anonymous"),
+                "against": result.get("against"),
+                "timeline": result.get("timeline"),
+                "details": result.get("details")
             }
         except Exception as e:
             logger.warning(f"Entity extraction failed: {e}")
@@ -71,7 +77,10 @@ Return ONLY the JSON, no other text."""
                 "department": None,
                 "issue": None,
                 "severity": None,
-                "anonymous": None
+                "anonymous": None,
+                "against": None,
+                "timeline": None,
+                "details": None
             }
     
     def extract_leave_entities(self, message: str) -> Dict[str, Optional[str]]:

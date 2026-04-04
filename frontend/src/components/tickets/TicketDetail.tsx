@@ -23,6 +23,7 @@ interface TicketDetailProps {
 const statusOptions = [
   { value: 'open', label: 'Open', color: 'bg-blue-100 text-blue-800' },
   { value: 'in_progress', label: 'In Progress', color: 'bg-yellow-100 text-yellow-800' },
+  { value: 'escalated', label: 'Escalated', color: 'bg-orange-100 text-orange-800' },
   { value: 'resolved', label: 'Resolved', color: 'bg-green-100 text-green-800' },
   { value: 'closed', label: 'Closed', color: 'bg-gray-100 text-gray-800' }
 ]

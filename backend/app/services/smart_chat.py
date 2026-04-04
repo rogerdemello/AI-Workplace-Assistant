@@ -212,28 +212,55 @@ class SmartChatService:
         return get_conversation_starter(sentiment)
     
     def _handle_leave_request(self, message: str) -> str:
-        """Handle leave request intents."""
-        # Check if user already provided dates
+        existing = self.flow_context.get("leave_data", {})
         message_lower = message.lower()
-        has_dates = any(
-            keyword in message_lower
-            for keyword in ["next week", "tomorrow", "today", "monday", "tuesday",
-                          "wednesday", "thursday", "friday", "date", "days", "weeks"]
-        )
         
-        if has_dates:
-            # User provided dates, acknowledge and confirm
-            return (
-                "Got it! I've noted the dates you mentioned. "
-                "Would you like me to help you submit a formal leave request, "
-                "or do you have any questions about your leave balance first?"
-            )
-        else:
-            # Ask for dates
-            return (
-                "Got it! What dates are you planning to take off? "
-                "Also, let me know if this is sick leave, vacation, personal time, or something else."
-            )
+        extracted = self.entity_extractor.extract_leave_entities(message)
+        leave_data = self._merge_leave_data(existing, extracted)
+        
+        self.flow_context["leave_data"] = leave_data
+        
+        next_step = self._get_next_leave_step(leave_data)
+        
+        if next_step == "done":
+            return self._complete_leave(leave_data)
+        
+        return self._generate_leave_response(leave_data, next_step)
+    
+    def _merge_leave_data(self, existing: Dict, extracted: Dict) -> Dict:
+        return {
+            "leave_type": extracted.get("leave_type") or existing.get("leave_type"),
+            "start_date": extracted.get("start_date") or existing.get("start_date"),
+            "end_date": extracted.get("end_date") or existing.get("end_date"),
+            "reason": extracted.get("reason") or existing.get("reason"),
+        }
+
+    def _get_next_leave_step(self, data: Dict) -> str:
+        if not data.get("leave_type"): return "leave_type"
+        if not data.get("start_date"): return "start_date"
+        if not data.get("end_date"): return "end_date"
+        if not data.get("reason"): return "reason"
+        return "done"
+
+    def _generate_leave_response(self, data: Dict, next_step: str) -> str:
+        if next_step == "leave_type":
+            return "Got it! What type of leave is this - vacation, sick, personal, or something else?"
+        elif next_step == "start_date":
+            leave_type = data.get("leave_type", "leave")
+            return f"Got it! When do you want to start your {leave_type}?"
+        elif next_step == "end_date":
+            start = data.get("start_date", "")
+            return f"Got it starting from {start}. When do you need to be back?"
+        elif next_step == "reason":
+            return "Got it! Any reason you'd like to share for the leave?"
+        elif next_step == "done":
+            return "Done 👍 Your leave request has been submitted. Your manager will review it."
+        return "Got it 👍 Let me process that."
+    
+    def _complete_leave(self, leave_data: Dict) -> str:
+        self.flow_context["leave_data"] = leave_data
+        self.current_flow = None
+        return "Done 👍 Your leave request has been submitted. Your manager will review it."
     
     def _handle_policy_query(self, message: str) -> str:
         """Handle policy query using RAG."""
@@ -271,35 +298,62 @@ class SmartChatService:
         )
     
     def _handle_ticket_create(self, message: str) -> str:
-        ticket_data = self.flow_context.get("ticket_data", {})
-        
+        existing = self.flow_context.get("ticket_data", {})
         message_lower = message.lower()
-        if not ticket_data.get("department"):
+        
+        if not existing.get("department"):
             if any(word in message_lower for word in ["manager", "boss", "team lead", "supervisor"]):
-                ticket_data["department"] = "HR"
+                existing["department"] = "HR"
             elif any(word in message_lower for word in ["laptop", "computer", "wifi", "software", "printer", "access"]):
-                ticket_data["department"] = "IT"
+                existing["department"] = "IT"
             elif any(word in message_lower for word in ["office", "desk", "parking", "clean", "food"]):
-                ticket_data["department"] = "Facilities"
+                existing["department"] = "Facilities"
         
         extracted = self.entity_extractor.extract_ticket_entities(message)
-        
-        for key, value in extracted.items():
-            if value is not None and ticket_data.get(key) is None:
-                ticket_data[key] = value
+        ticket_data = self._merge_ticket_data(existing, extracted)
         
         self.flow_context["ticket_data"] = ticket_data
         
-        missing = self._get_missing_ticket_fields(ticket_data)
+        next_step = self._get_next_ticket_step(ticket_data)
         
-        if not missing:
+        if next_step == "done":
             return self._complete_ticket(ticket_data)
         
-        return self._next_ticket_question_human(missing, ticket_data)
+        return self._generate_ticket_response(ticket_data, next_step)
     
     def _get_missing_ticket_fields(self, ticket_data: Dict) -> list:
         priority_fields = ["issue", "department", "anonymous"]
         return [f for f in priority_fields if not ticket_data.get(f)]
+    
+    def _merge_ticket_data(self, existing: Dict, extracted: Dict) -> Dict:
+        return {
+            "against": extracted.get("against") or existing.get("against"),
+            "issue": extracted.get("issue") or existing.get("issue"),
+            "timeline": extracted.get("timeline") or existing.get("timeline"),
+            "details": extracted.get("details") or existing.get("details"),
+            "department": extracted.get("department") or existing.get("department"),
+            "anonymous": extracted.get("anonymous") if extracted.get("anonymous") is not None else existing.get("anonymous"),
+        }
+
+    def _get_next_ticket_step(self, data: Dict) -> str:
+        if not data.get("against"): return "against"
+        if not data.get("issue"): return "issue"
+        if not data.get("anonymous"): return "anonymous"
+        return "done"
+
+    def _generate_ticket_response(self, data: Dict, next_step: str) -> str:
+        if next_step == "against":
+            return "Got it 👍 Who is this complaint about?"
+        elif next_step == "issue":
+            if data.get("against"):
+                return f"That sounds tough 😔 Can you tell me what happened with {data['against']}?"
+            return "That sounds tough 😔 Can you tell me what happened?"
+        elif next_step == "anonymous":
+            return "Got it 👍 Do you want to stay anonymous?"
+        elif next_step == "done":
+            dept = data.get("department", "HR")
+            return f"Done 👍 I've submitted your complaint to {dept}. They'll look into it."
+        return "Got it 👍 Let me process that."
     
     def _next_ticket_question_human(self, missing: list, ticket_data: Dict) -> str:
         issue = ticket_data.get("issue")
