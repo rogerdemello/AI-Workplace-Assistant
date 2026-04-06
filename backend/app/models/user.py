@@ -33,3 +33,6 @@ class User(Base):
     status = Column(SQLEnum(UserStatus), default=UserStatus.active, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    profile = relationship("UserProfile", back_populates="user", uselist=False)
+    memory = relationship("ConversationMemory", back_populates="user")

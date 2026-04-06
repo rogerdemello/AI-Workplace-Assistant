@@ -392,4 +392,26 @@ CREATE INDEX idx_email_logs_provider ON email_logs(provider_id);
 CREATE INDEX idx_activity_logs_user_created_at ON activity_logs(user_id, created_at DESC);
 CREATE INDEX idx_activity_logs_metadata_gin ON activity_logs USING GIN (metadata);
 
+CREATE TABLE user_profiles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+    name VARCHAR(100),
+    department VARCHAR(100),
+    preferences JSONB,
+    last_summary TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE conversation_memory (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    summary TEXT NOT NULL,
+    tags JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_user_profiles_user_id ON user_profiles(user_id);
+CREATE INDEX idx_conversation_memory_user_created ON conversation_memory(user_id, created_at DESC);
+
 COMMIT;

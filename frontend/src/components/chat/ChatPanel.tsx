@@ -61,7 +61,7 @@ export function ChatPanel() {
           <div className="flex items-center justify-between px-4 py-3 border-b bg-primary/5">
             <div className="flex items-center gap-2">
               <Bot className="h-5 w-5 text-primary" />
-              <h2 className="font-semibold text-lg">Amber Assist</h2>
+              <h2 className="font-semibold text-lg">Amber</h2>
             </div>
             <Button
               variant="ghost"

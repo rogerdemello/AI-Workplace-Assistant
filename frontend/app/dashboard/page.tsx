@@ -1,227 +1,188 @@
-'use client'
+"use client";
 
-import { useState, useEffect } from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts'
-import { getAnalyticsOverview, getSentimentTrend, SentimentTrendResponse } from '@/lib/api'
-
-interface KPI {
-  label: string
-  value: string
-  change: string
-  positive: boolean
-}
-
-const departments = ['All Departments', 'Engineering', 'Sales', 'Marketing', 'HR', 'Operations']
-const dateRanges = ['Last 7 days', 'Last 30 days', 'Last 90 days', 'Last year']
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { BarChart3, LogOut, MessageSquareText, Users } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { DashboardCards } from '@/components/DashboardCards';
+import { SentimentChart } from '@/components/SentimentChart';
+import { EmployeeTable } from '@/components/EmployeeTable';
+import { useAuth } from '@/context/AuthContext';
+import { Spinner } from '@/components/ui/spinner';
+import { clearSession } from '@/lib/session';
+import { loadDashboardData, type DashboardData } from '@/lib/hr-data';
 
 export default function DashboardPage() {
-  const [department, setDepartment] = useState('All Departments')
-  const [dateRange, setDateRange] = useState('Last 30 days')
-  const [kpis, setKpis] = useState<KPI[]>([])
-  const [sentimentData, setSentimentData] = useState<{ month: string; positive: number; neutral: number; negative: number }[]>([])
-  const [resolutionData, setResolutionData] = useState<{ priority: string; rate: number; fill: string }[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const router = useRouter();
+  const { session, loading: authLoading } = useAuth();
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true)
-      setError(null)
-      
-      try {
-        const [overview, sentiment] = await Promise.all([
-          getAnalyticsOverview(),
-          getSentimentTrend(30)
-        ])
+    if (authLoading) return;
 
-        setKpis([
-          { label: 'Engagement Score', value: `${overview.engagement_score}%`, change: '', positive: true },
-          { label: 'Resolution Rate', value: `${Math.round(overview.resolution_rate * 100)}%`, change: '', positive: true },
-          { label: 'Avg Response', value: `${overview.avg_response_time}h`, change: '', positive: true },
-          { label: 'Active Users', value: String(overview.active_users), change: '', positive: true }
-        ])
-
-        const last6Months = sentiment.slice(-6).map((item: SentimentTrendResponse) => {
-          const date = new Date(item.date)
-          return {
-            month: date.toLocaleString('default', { month: 'short' }),
-            positive: item.positive,
-            neutral: item.neutral,
-            negative: item.negative
-          }
-        })
-        setSentimentData(last6Months)
-
-        setResolutionData([
-          { priority: 'Critical', rate: 95, fill: 'hsl(0 84.2% 60.2%)' },
-          { priority: 'High', rate: 88, fill: 'hsl(25 95.4% 53.3%)' },
-          { priority: 'Medium', rate: 75, fill: 'hsl(48 96.5% 53.3%)' },
-          { priority: 'Low', rate: 60, fill: 'hsl(142 76.2% 36.3%)' }
-        ])
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load dashboard data')
-        setKpis([
-          { label: 'Engagement Score', value: 'N/A', change: '', positive: true },
-          { label: 'Resolution Rate', value: 'N/A', change: '', positive: true },
-          { label: 'Avg Response', value: 'N/A', change: '', positive: true },
-          { label: 'Active Users', value: 'N/A', change: '', positive: true }
-        ])
-      } finally {
-        setLoading(false)
-      }
+    if (session?.role === 'employee') {
+      router.replace('/employee');
+      return;
     }
 
-    fetchData()
-  }, [])
+    const run = async () => {
+      setLoading(true);
+      const dashboardData = await loadDashboardData();
+      setData(dashboardData);
+      setLoading(false);
+    };
 
-  if (loading) {
-    return (
-      <div className="container mx-auto py-8">
-        <div className="flex items-center justify-center h-64">
-          <div className="text-muted-foreground">Loading dashboard...</div>
-        </div>
-      </div>
-    )
+    void run();
+  }, [authLoading, session, router]);
+
+  if (authLoading || loading || !data) {
+    return <Spinner message="Verifying authentication..." />;
   }
 
-  if (error) {
-    return (
-      <div className="container mx-auto py-8">
-        <div className="flex items-center justify-center h-64">
-          <div className="text-red-500">Error: {error}</div>
-        </div>
-      </div>
-    )
-  }
+  const statusStyles = {
+    Open: 'bg-blue-50 text-blue-700 border-blue-200',
+    'In Review': 'bg-amber-50 text-amber-700 border-amber-200',
+    Resolved: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    Escalated: 'bg-rose-50 text-rose-700 border-rose-200',
+  } as const;
 
   return (
-    <div className="container mx-auto py-8">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
-        <h1 className="text-2xl font-bold">HR Analytics Dashboard</h1>
-        
-        <div className="flex flex-col sm:flex-row gap-3">
-          <Select value={department} onValueChange={setDepartment}>
-            <SelectTrigger className="w-[180px]">
-              <SelectValue placeholder="Department" />
-            </SelectTrigger>
-            <SelectContent>
-              {departments.map((dept) => (
-                <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          
-          <Select value={dateRange} onValueChange={setDateRange}>
-            <SelectTrigger className="w-[180px]">
-              <SelectValue placeholder="Date Range" />
-            </SelectTrigger>
-            <SelectContent>
-              {dateRanges.map((range) => (
-                <SelectItem key={range} value={range}>{range}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {kpis.map((kpi, i) => (
-          <Card key={i}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">{kpi.label}</CardTitle>
+    <div className="min-h-screen px-6 py-8">
+      <div className="mx-auto flex max-w-7xl flex-col gap-8">
+        <header className="flex flex-col gap-4 rounded-[2rem] border border-slate-200 bg-white px-6 py-5 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-blue-600">HR dashboard</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">Mark control center</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-500">Tickets, sentiment, and employee insight all flow here from the employee chat experience.</p>
+          </div>
+
+          <div className="flex gap-3">
+            <Button variant="outline" className="rounded-full border-slate-200 bg-white" onClick={() => router.push('/employee')}>
+              <MessageSquareText className="mr-2 h-4 w-4" />
+              Employee view
+            </Button>
+            <Button
+              className="rounded-full"
+              onClick={() => {
+                clearSession();
+                router.replace('/login?role=hr');
+              }}
+            >
+              <LogOut className="mr-2 h-4 w-4" />
+              Logout
+            </Button>
+          </div>
+        </header>
+
+        <DashboardCards engagementScore={data.metrics.engagementScore} riskLevel={data.metrics.riskLevel} openTickets={data.metrics.openTickets} />
+
+        <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+          <SentimentChart data={data.sentimentPoints} />
+
+          <Card className="border-slate-200 shadow-sm">
+            <CardHeader>
+              <CardTitle>AI Insight</CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{kpi.value}</div>
-              <Badge variant={kpi.positive ? 'default' : 'destructive'} className="mt-1">
-                {kpi.change}
-              </Badge>
+            <CardContent className="space-y-4">
+              <div className="rounded-2xl bg-blue-50 p-4 text-sm leading-7 text-blue-900">
+                {data.metrics.aiSummary}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Total tickets</p>
+                  <p className="mt-2 text-2xl font-semibold text-slate-900">{data.metrics.totalTickets}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Departments in view</p>
+                  <p className="mt-2 text-2xl font-semibold text-slate-900">4</p>
+                </div>
+              </div>
             </CardContent>
           </Card>
-        ))}
-      </div>
+        </section>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Sentiment Trend</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={sentimentData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(214.3 31.8% 91.4%)" />
-                  <XAxis dataKey="month" stroke="hsl(215.4 16.3% 46.9%)" fontSize={12} />
-                  <YAxis stroke="hsl(215.4 16.3% 46.9%)" fontSize={12} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(0 0% 100%)',
-                      border: '1px solid hsl(214.3 31.8% 91.4%)',
-                      borderRadius: '8px'
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="positive"
-                    stroke="hsl(142 76.2% 36.3%)"
-                    strokeWidth={2}
-                    dot={{ fill: 'hsl(142 76.2% 36.3%)', r: 4 }}
-                    name="Positive"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="neutral"
-                    stroke="hsl(221.2 83.2% 53.3%)"
-                    strokeWidth={2}
-                    dot={{ fill: 'hsl(221.2 83.2% 53.3%)', r: 4 }}
-                    name="Neutral"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="negative"
-                    stroke="hsl(0 84.2% 60.2%)"
-                    strokeWidth={2}
-                    dot={{ fill: 'hsl(0 84.2% 60.2%)', r: 4 }}
-                    name="Negative"
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card>
-          <CardHeader>
-            <CardTitle>Resolution by Priority</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={resolutionData} layout="vertical" margin={{ top: 5, right: 20, left: 40, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(214.3 31.8% 91.4%)" />
-                  <XAxis type="number" domain={[0, 100]} stroke="hsl(215.4 16.3% 46.9%)" fontSize={12} />
-                  <YAxis type="category" dataKey="priority" stroke="hsl(215.4 16.3% 46.9%)" fontSize={12} width={60} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(0 0% 100%)',
-                      border: '1px solid hsl(214.3 31.8% 91.4%)',
-                      borderRadius: '8px'
-                    }}
-                    formatter={(value) => [`${value}%`, 'Resolution Rate']}
-                  />
-                  <Bar dataKey="rate" name="Resolution Rate" radius={[0, 4, 4, 0]}>
-                    {resolutionData.map((entry, index) => (
-                      <Bar key={`bar-${index}`} fill={entry.fill} />
+        <section className="grid gap-6 lg:grid-cols-[1fr_0.95fr]">
+          <Card className="border-slate-200 shadow-sm">
+            <CardHeader>
+              <CardTitle>Ticket Management</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="py-3 pr-4 font-semibold">Employee ID</th>
+                      <th className="py-3 pr-4 font-semibold">Issue</th>
+                      <th className="py-3 pr-4 font-semibold">Against</th>
+                      <th className="py-3 pr-4 font-semibold">Status</th>
+                      <th className="py-3 font-semibold">Anonymous</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {data.tickets.map((ticket) => (
+                      <tr key={ticket.id} className="hover:bg-slate-50">
+                        <td className="py-4 pr-4 font-medium text-slate-900">{ticket.employeeId}</td>
+                        <td className="py-4 pr-4 text-slate-600">{ticket.issue}</td>
+                        <td className="py-4 pr-4 text-slate-600">{ticket.against}</td>
+                        <td className="py-4 pr-4">
+                          <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${statusStyles[ticket.status]}`}>
+                            {ticket.status}
+                          </span>
+                        </td>
+                        <td className="py-4 text-slate-600">{ticket.anonymous ? 'Yes' : 'No'}</td>
+                      </tr>
                     ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-slate-200 shadow-sm">
+            <CardHeader>
+              <CardTitle>Employee insights</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">
+                Employee sentiment is computed from live message activity and rolled into risk scoring for HR review.
+              </div>
+              <div className="grid gap-3">
+                {data.employees.slice(0, 3).map((employee) => (
+                  <div key={employee.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="font-medium text-slate-900">{employee.name}</p>
+                        <p className="text-sm text-slate-500">{employee.employeeId} · {employee.department}</p>
+                      </div>
+                      <div className="text-right text-sm">
+                        <p className="font-semibold text-slate-900">{employee.sentimentScore}%</p>
+                        <p className="text-slate-500">sentiment</p>
+                      </div>
+                    </div>
+                    <div className="mt-3 h-2 rounded-full bg-slate-100">
+                      <div className="h-2 rounded-full bg-blue-600" style={{ width: `${employee.sentimentScore}%` }} />
+                    </div>
+                    <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+                      <span>Risk score: {employee.riskScore}</span>
+                      <span>{employee.lastActive}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="space-y-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-blue-600">Employee table</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">Search and filter employee risk</h2>
+          </div>
+          <EmployeeTable rows={data.employees} />
+        </section>
       </div>
     </div>
-  )
+  );
 }

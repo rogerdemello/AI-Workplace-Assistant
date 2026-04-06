@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_SECRET: str = ""
     VITE_API_URL: str = "http://localhost:8000"
 
+    SUPABASE_URL: Optional[str] = None
+    SUPABASE_SERVICE_KEY: Optional[str] = None
+    SUPABASE_KEY: Optional[str] = None
+    SUPABASE_JWT_SECRET: Optional[str] = None
+    ALLOW_HEADER_ROLE_AUTH: bool = False
+
     class Config:
         env_file = PROJECT_ROOT / ".env"
         env_file_encoding = "utf-8"

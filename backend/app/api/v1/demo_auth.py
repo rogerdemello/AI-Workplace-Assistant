@@ -28,20 +28,31 @@ def demo_login(request: DemoLoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == request.email).first()
     
     if not user:
+        role = UserRole.employee
+        if 'hr' in request.email.lower():
+            role = UserRole.hr
+            
+        # Unique per user — hardcoded DEMO001 breaks on second signup (employee_id is unique).
+        employee_id = f"EMP-{uuid4().hex[:10].upper()}"
+
         user = User(
             id=uuid4(),
             email=request.email,
             name=request.name,
-            employee_id="DEMO001",
+            employee_id=employee_id,
             hashed_password=hash_password("demo123"),
-            role=UserRole.employee,
+            role=role,
             status=UserStatus.active
         )
         db.add(user)
         db.commit()
         db.refresh(user)
     
-    access_token = create_access_token(data={"sub": str(user.id), "email": user.email})
+    access_token = create_access_token(data={
+        "sub": str(user.id), 
+        "email": user.email,
+        "role": user.role.value
+    })
     
     return DemoLoginResponse(
         access_token=access_token,

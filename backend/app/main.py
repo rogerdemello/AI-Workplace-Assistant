@@ -21,6 +21,12 @@ from .api.v1.feedback import router as feedback_router
 from .api.v1.integrations import router as integrations_router
 from .api.v1.rooms import router as rooms_router
 from .api.v1.analytics import router as analytics_router
+from .routes import hr_auth as hr_auth_routes
+from .routes import hr_dashboard as hr_dashboard_routes
+from .routes import hr_tickets as hr_tickets_routes
+from .routes import hr_employees as hr_employees_routes
+from .routes import hr_insights as hr_insights_routes
+from .routes import hr_actions as hr_actions_routes
 from .middleware.rate_limit import rate_limit_middleware
 from .middleware.budget import budget_middleware
 from .middleware.security import (
@@ -126,6 +132,13 @@ app.include_router(feedback_router, prefix="/api/v1")
 app.include_router(integrations_router, prefix="/api/v1")
 app.include_router(rooms_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
+app.include_router(hr_auth_routes.router, prefix="/hr")
+app.include_router(hr_auth_routes.legacy_router, prefix="/api/v1")
+app.include_router(hr_dashboard_routes.router, prefix="/hr")
+app.include_router(hr_tickets_routes.router, prefix="/hr")
+app.include_router(hr_employees_routes.router, prefix="/hr")
+app.include_router(hr_insights_routes.router, prefix="/hr")
+app.include_router(hr_actions_routes.router, prefix="/hr")
 
 
 # Root endpoint
