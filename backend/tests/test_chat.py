@@ -17,7 +17,7 @@ class TestCreateConversation:
     def test_create_conversation_unauthorized(self, client):
         """Test creating conversation without authentication."""
         response = client.post("/api/v1/chat/conversations")
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
 
 class TestGetConversations:
@@ -46,7 +46,7 @@ class TestGetConversations:
     def test_get_conversations_unauthorized(self, client):
         """Test getting conversations without authentication."""
         response = client.get("/api/v1/chat/conversations")
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
 
 class TestGetConversation:

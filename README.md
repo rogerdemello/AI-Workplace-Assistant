@@ -1,6 +1,6 @@
 # AI Workplace Assistant
 
-An AI-powered conversational assistant for HR automation and employee workplace support.
+An AI-powered Friendly HR partner for HR automation and employee workplace support.
 
 ## Purpose
 This project provides a friendly, human-like interface for employees to complete HR and office productivity tasks in one place.
@@ -11,6 +11,12 @@ This project provides a friendly, human-like interface for employees to complete
 - Provide proactive insight via sentiment and attrition analytics.
 
 ## Documentation
+- [MARK Product and System Design](docs/Mark-Intelligent-Workplace-Agent-Product-System-Design.md)
+- [MARK vs Infeedo B2B Comparison](docs/Mark-vs-Infeedo-B2B-Comparison.md)
+- [MARK Jira Execution Backlog](docs/Mark-Jira-Execution-Backlog.md)
+- [MARK Jira Execution Import CSV](docs/Mark-Jira-Execution-Import.csv)
+- [MARK Layer-2 API Contracts](docs/Mark-Layer2-API-Contracts.yaml)
+- [MARK Database Migration Plan](docs/Mark-Database-Migration-Plan.md)
 - [Technical Documentation](docs/AI-HR-Workplace-Assistant-Technical-Documentation.md)
 - [Database Schema Design](docs/Database-Schema-Design.md)
 - [Task and Workflow Playbook](docs/Task-Workflow-Playbook.md)
@@ -27,7 +33,7 @@ This project provides a friendly, human-like interface for employees to complete
 
 ## MVP Focus
 Phase 1 prioritizes:
-- Conversational chatbot
+- Friendly HR partner experience (human-like, trusted, workflow-first)
 - RAG for HR policies and FAQs
 - HR ticket automation
 - Email drafting assistant

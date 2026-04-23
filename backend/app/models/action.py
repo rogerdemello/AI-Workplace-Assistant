@@ -5,6 +5,7 @@ from datetime import datetime
 import enum
 
 from ..database import Base
+from ..core.time import utcnow_naive
 
 
 class HRActionType(str, enum.Enum):
@@ -32,8 +33,8 @@ class HRAction(Base):
     completed_at = Column(DateTime, nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive, index=True)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     
     employee = relationship("User", foreign_keys=[employee_id])
     creator = relationship("User", foreign_keys=[created_by])

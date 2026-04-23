@@ -1,8 +1,15 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from typing import Optional
 from uuid import UUID, uuid4
 import hashlib
+from sqlalchemy.orm import Session
+
+from ...auth import get_current_user
+from ...database import get_db
+from ...models.chat_feedback import ChatFeedback
+from ...models.user import User
 
 router = APIRouter(prefix="/feedback", tags=["feedback"])
 
@@ -14,6 +21,22 @@ class FeedbackCreate(BaseModel):
 
 class FeedbackResponse(BaseModel):
     token: str
+    status: str
+
+
+class ChatCSATCreate(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    conversation_id: Optional[UUID] = None
+    comment: Optional[str] = None
+    intent: Optional[str] = None
+    sentiment: Optional[str] = None
+    source: str = "chat"
+
+
+class ChatCSATResponse(BaseModel):
+    id: UUID
+    rating: int
+    created_at: datetime
     status: str
 
 
@@ -71,3 +94,35 @@ def get_feedback_categories():
         {"value": "workload", "label": "Workload"},
         {"value": "other", "label": "Other"}
     ]
+
+
+@router.post("/csat", response_model=ChatCSATResponse, status_code=status.HTTP_201_CREATED)
+def submit_chat_csat(
+    payload: ChatCSATCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Capture in-chat CSAT ratings for quality monitoring."""
+    comment = (payload.comment or "").strip() or None
+    if comment and len(comment) > 1200:
+        raise HTTPException(status_code=400, detail="Comment cannot exceed 1200 characters")
+
+    row = ChatFeedback(
+        user_id=current_user.id,
+        conversation_id=payload.conversation_id,
+        rating=payload.rating,
+        comment=comment,
+        intent=(payload.intent or None),
+        sentiment=(payload.sentiment or None),
+        source=(payload.source or "chat"),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return ChatCSATResponse(
+        id=row.id,
+        rating=row.rating,
+        created_at=row.created_at,
+        status="submitted",
+    )

@@ -9,7 +9,7 @@ This service provides:
 """
 
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, func
@@ -31,7 +31,7 @@ class EmotionalMemory:
         days: int = 30
     ) -> List[Dict]:
         """Get sentiment history for a user over specified days."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
         
         messages = self.db.query(Message).join(
             Message.conversation
@@ -145,8 +145,18 @@ class EmotionalMemory:
         topics = self.get_conversation_topics(user_id)
         
         department_name = None
-        if user.department:
-            department_name = user.department.name
+        try:
+            # Prefer `department_id` but safely support legacy `department` attrs.
+            dept_id = getattr(user, 'department_id', None)
+            if not dept_id:
+                legacy_dept = getattr(user, 'department', None)
+                dept_id = getattr(legacy_dept, 'id', None) if legacy_dept else None
+            if dept_id:
+                from ..models.department import Department
+                dept = self.db.query(Department).filter(Department.id == dept_id).first()
+                department_name = dept.name if dept else str(dept_id)
+        except Exception:
+            pass
         
         return {
             "user_name": user.name,

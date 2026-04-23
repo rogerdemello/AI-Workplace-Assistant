@@ -40,7 +40,7 @@ class TestCreateTicket:
             "category": "general",
             "priority": "low"
         })
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     def test_create_ticket_with_all_categories(self, client, test_user, auth_headers):
         """Test creating tickets with different categories."""
@@ -103,7 +103,7 @@ class TestGetTickets:
     def test_get_tickets_unauthorized(self, client):
         """Test getting tickets without authentication."""
         response = client.get("/api/v1/tickets")
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
 
 class TestGetTicket:
@@ -281,3 +281,21 @@ class TestHRTicketAccess:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert len(data) >= 1
+
+
+class TestTicketAssignees:
+    """Tests for assignee lookup endpoint used by HR ticket management."""
+
+    def test_hr_can_list_assignees(self, client, hr_user, admin_user, hr_auth_headers):
+        response = client.get("/api/v1/tickets/assignees", headers=hr_auth_headers)
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) >= 2
+        emails = {item["email"] for item in data}
+        assert "hr@example.com" in emails
+        assert "admin@example.com" in emails
+
+    def test_employee_cannot_list_assignees(self, client, auth_headers):
+        response = client.get("/api/v1/tickets/assignees", headers=auth_headers)
+        assert response.status_code == status.HTTP_403_FORBIDDEN

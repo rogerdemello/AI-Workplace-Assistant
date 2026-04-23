@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 
 from ..models.conversation import Message, Conversation, SentimentLabel
+from ..core.time import utcnow_naive
 from ..models.ticket import Ticket, TicketStatus
 from ..models.survey import Survey, SurveyResponse
 
@@ -73,7 +74,7 @@ class EngagementScore:
     
     def _calculate_sentiment_score(self, user_id: UUID, days: int) -> float:
         """Calculate score based on sentiment of messages."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow_naive() - timedelta(days=days)
         
         messages = self.db.query(Message).join(
             Conversation
@@ -101,7 +102,7 @@ class EngagementScore:
     
     def _calculate_participation_score(self, user_id: UUID, days: int) -> float:
         """Calculate score based on survey participation."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow_naive() - timedelta(days=days)
         
         surveys = self.db.query(Survey).filter(
             Survey.created_at >= cutoff
@@ -120,7 +121,7 @@ class EngagementScore:
     
     def _calculate_frequency_score(self, user_id: UUID, days: int) -> float:
         """Calculate score based on conversation frequency."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow_naive() - timedelta(days=days)
         
         message_count = self.db.query(Message).join(
             Conversation
@@ -150,7 +151,7 @@ class EngagementScore:
         if not last_message:
             return 30.0
         
-        days_since = (datetime.utcnow() - last_message.created_at).days
+        days_since = (utcnow_naive() - last_message.created_at).days
         
         if days_since <= 3:
             return 100.0

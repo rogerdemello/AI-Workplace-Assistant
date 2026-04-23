@@ -3,12 +3,11 @@ import os
 from sqlalchemy import engine_from_config, pool
 from alembic import context
 
-# Import your models' base for autogenerate support
-# from your_models import Base
-# target_metadata = Base.metadata
+# Import models to register them with Base.metadata
+from app.database import Base
+import app.models
 
-# For now, set to None - we'll use SQL script migration
-target_metadata = None
+target_metadata = Base.metadata
 
 # Get alembic config
 config = context.config

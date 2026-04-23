@@ -2,7 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from typing import List
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from ..database import get_db
 from ..models.user import User, UserRole, UserStatus
@@ -23,16 +23,25 @@ def get_current_user(
         )
     user_id = payload.get("sub")
     email = payload.get("email", "demo@example.com")
-    
-    # Try to find by ID first, then by email
-    user = db.query(User).filter(User.id == user_id).first()
+
+    # Try to find by UUID first (when token subject is UUID), then by email.
+    user = None
+    user_uuid = None
+    try:
+        if user_id:
+            user_uuid = UUID(str(user_id))
+    except Exception:
+        user_uuid = None
+
+    if user_uuid is not None:
+        user = db.query(User).filter(User.id == user_uuid).first()
     
     if user is None:
         user = db.query(User).filter(User.email == email).first()
     
     if user is None:
         user = User(
-            id=UUID(user_id),
+            id=user_uuid or uuid4(),
             email=email,
             name="Demo User",
             employee_id=f"DEMO{user_id[:4]}",

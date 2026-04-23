@@ -1,4 +1,5 @@
 import * as React from "react"
+import Image from "next/image"
 import { cn } from "@/lib/utils"
 
 export interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -17,7 +18,15 @@ const Avatar = React.forwardRef<HTMLDivElement, AvatarProps>(
         )}
         {...props}
       >
-        {src && <img src={src} alt={alt} className="aspect-square h-full w-full" />}
+        {src ? (
+          <Image
+            src={src}
+            alt={alt ?? "Avatar"}
+            fill
+            sizes="40px"
+            className="aspect-square h-full w-full object-cover"
+          />
+        ) : null}
       </div>
     )
   }

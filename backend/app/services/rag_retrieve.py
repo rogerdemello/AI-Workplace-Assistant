@@ -1,8 +1,10 @@
+import hashlib
 import numpy as np
 from typing import List, Dict, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+import logging
 
 from ..models.document import Document, DocumentChunk
 from ..ai_client import get_ai_client
@@ -12,7 +14,58 @@ from .hr_personality import FRIENDLY_SYSTEM_PROMPT
 SIMILARITY_THRESHOLD = 0.7
 TOP_K = 3
 CHUNK_CACHE_TTL = 3600
-RAG_CACHE_TTL = 600
+RETRIEVAL_CACHE_TTL = 300
+KEYWORD_FALLBACK_THRESHOLD = 0.15
+
+logger = logging.getLogger(__name__)
+
+FALLBACK_SUMMARIES = {
+    "leave": {
+        "category": "leave",
+        "summary": (
+            "Our leave policy provides paid time off for vacation, sick leave, and personal days. "
+            "Employees accrue leave based on tenure and role. Requests should be submitted through "
+            "the HR portal at least 48 hours in advance when possible. For extended medical leave, "
+            "please contact HR directly to discuss eligibility and documentation requirements."
+        ),
+    },
+    "harassment": {
+        "category": "complaint",
+        "summary": (
+            "We maintain a strict zero-tolerance policy toward harassment, discrimination, and bullying. "
+            "All reports are treated confidentially and investigated promptly by HR or a designated "
+            "ombuds person. Employees may report concerns anonymously through the ethics hotline or "
+            "directly to their manager or HR partner. Retaliation for reporting in good faith is prohibited."
+        ),
+    },
+    "remote": {
+        "category": "general",
+        "summary": (
+            "Our remote work policy supports flexible arrangements where role requirements allow. "
+            "Eligible employees may work remotely up to the agreed schedule with their manager. "
+            "Core collaboration hours and security protocols (VPN, device management) apply. "
+            "Please consult your manager or the HR portal for role-specific eligibility and expectations."
+        ),
+    },
+    "benefits": {
+        "category": "general",
+        "summary": (
+            "We offer a comprehensive benefits package including health, dental, and vision insurance, "
+            "retirement plans with employer matching, wellness stipends, and professional development "
+            "allowances. Enrollment periods and plan details are available on the HR portal. For questions "
+            "about coverage or claims, contact our benefits administrator or HR partner."
+        ),
+    },
+    "pto": {
+        "category": "leave",
+        "summary": (
+            "Paid Time Off (PTO) combines vacation, sick, and personal leave into a single bank. "
+            "Accrual rates vary by tenure and location. PTO requests should be submitted via the HR portal, "
+            "and managers are encouraged to approve requests that meet business needs. Unused PTO may be "
+            "subject to carryover or payout policies based on local regulations."
+        ),
+    },
+}
 
 
 class RAGRetrieveService:
@@ -48,30 +101,44 @@ class RAGRetrieveService:
         top_k: int = TOP_K,
         threshold: float = SIMILARITY_THRESHOLD
     ) -> List[Dict]:
-        cache_key = f"rag:search:{query}:{top_k}:{threshold}"
+        query_hash = hashlib.md5(f"{query}:{top_k}:{threshold}".encode("utf-8")).hexdigest()
+        cache_key = f"rag:search:{query_hash}"
         cached_result = get_cached(cache_key)
-        
+
         if cached_result is not None:
             return cached_result
-        
-        query_embedding = self.ai_client.embeddings(query)
-        
+
+        query_embedding: Optional[List[float]] = None
+        embedding_available = True
+        try:
+            query_embedding = self.ai_client.embeddings(query)
+        except Exception as exc:
+            embedding_available = False
+            logger.warning(
+                "RAG embedding unavailable; falling back to keyword retrieval only: %s",
+                exc,
+            )
+
         chunks = self._get_active_chunks()
-        
+
         results = []
         for chunk in chunks:
             chunk_embedding = self._get_chunk_embedding(chunk)
-            
-            if chunk_embedding is not None:
-                vector_sim = self._cosine_similarity(query_embedding, chunk_embedding)
-            else:
-                vector_sim = 0.0
-            
+
+            vector_sim = 0.0
+            if embedding_available and query_embedding is not None:
+                chunk_embedding = self._get_chunk_embedding(chunk)
+                if chunk_embedding is not None:
+                    vector_sim = self._cosine_similarity(query_embedding, chunk_embedding)
+
             keyword_sim = self._keyword_similarity(query, chunk.content)
-            
+
             similarity = (0.7 * vector_sim) + (0.3 * keyword_sim)
-            
-            if similarity >= threshold:
+            if not embedding_available:
+                similarity = keyword_sim
+
+            effective_threshold = threshold if embedding_available else min(threshold, KEYWORD_FALLBACK_THRESHOLD)
+            if similarity >= effective_threshold:
                 results.append({
                     "chunk_id": str(chunk.id),
                     "document_id": str(chunk.document_id),
@@ -83,29 +150,49 @@ class RAGRetrieveService:
                     "keyword_score": round(keyword_sim, 4),
                     "source": f"{chunk.document.title} (chunk {chunk.chunk_index + 1})"
                 })
-        
+
         results.sort(key=lambda x: x["score"], reverse=True)
         final_results = results[:top_k]
-        
-        set_cached(cache_key, final_results, RAG_CACHE_TTL)
-        
+
+        set_cached(cache_key, final_results, RETRIEVAL_CACHE_TTL)
+
         return final_results
+
+    def _classify_query(self, query: str) -> str:
+        q = query.lower()
+        if any(word in q for word in ("leave", "vacation", "sick day", "time off", "pto")):
+            if "pto" in q or "paid time off" in q:
+                return "pto"
+            return "leave"
+        if any(word in q for word in ("harassment", "discrimination", "bullying", "complaint", "report")):
+            return "harassment"
+        if any(word in q for word in ("remote", "work from home", "wfh", "hybrid")):
+            return "remote"
+        if any(word in q for word in ("benefits", "insurance", "health", "dental", "retirement", "401k")):
+            return "benefits"
+        return "general"
+
+    def _get_fallback_summary(self, query: str) -> Dict[str, str]:
+        topic = self._classify_query(query)
+        return FALLBACK_SUMMARIES.get(topic, FALLBACK_SUMMARIES["general"])
     
     def search_with_citations(self, query: str) -> Dict:
         results = self.search(query)
-        
+
         if not results:
+            fallback = self._get_fallback_summary(query)
             return {
-                "answer": "No relevant documents found for your query.",
+                "answer": fallback["summary"],
                 "citations": [],
-                "sources": []
+                "sources": [],
+                "fallback_summary": fallback,
             }
-        
+
         context = "\n\n".join([
-            f"[Source {i+1}]: {r['content']}" 
+            f"[Source {i+1}]: {r['content']}"
             for i, r in enumerate(results)
         ])
-        
+
         prompt = f"""Based on the following context, answer the user's question.
 If you cannot find the answer in the context, say so honestly.
 
@@ -115,11 +202,11 @@ Context:
 Question: {query}
 
 Answer:"""
-        
+
         response = self.ai_client.chat_completion(
             messages=[
                 {
-                    "role": "system", 
+                    "role": "system",
                     "content": f"""{FRIENDLY_SYSTEM_PROMPT}
 
 When answering HR policy questions:
@@ -132,11 +219,11 @@ When answering HR policy questions:
             temperature=0.5,
             max_tokens=500
         )
-        
+
         answer = response["choices"][0]["message"]["content"]
-        
+
         citations = [r["source"] for r in results]
-        
+
         return {
             "answer": answer,
             "citations": citations,

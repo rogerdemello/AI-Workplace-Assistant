@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
@@ -33,8 +33,7 @@ class MessageResponse(BaseModel):
     confidence: Optional[float] = None
     created_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ConversationCreate(BaseModel):
     pass
@@ -46,9 +45,13 @@ class ConversationResponse(BaseModel):
     started_at: datetime
     ended_at: Optional[datetime] = None
     messages: List[MessageResponse] = []
-    
-    class Config:
-        from_attributes = True
+    active_flow: Optional[str] = None
+    last_intent: Optional[str] = None
+    state: Optional[dict] = None
+    last_question: Optional[str] = None
+    completed: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
 
 class ConversationListResponse(BaseModel):
     id: UUID
@@ -57,9 +60,13 @@ class ConversationListResponse(BaseModel):
     started_at: datetime
     ended_at: Optional[datetime] = None
     last_message: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
+    active_flow: Optional[str] = None
+    last_intent: Optional[str] = None
+    state: Optional[dict] = None
+    last_question: Optional[str] = None
+    completed: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ChatRequest(BaseModel):
@@ -73,6 +80,9 @@ class ChatResponse(BaseModel):
     sentiment: Optional[SentimentLabel] = None
     conversation_state: Optional[dict] = None
     context: Optional[dict] = None
+    active_flow: Optional[str] = None
+    last_intent: Optional[str] = None
+    completed: bool = False
 
 
 class ConversationStartResponse(BaseModel):

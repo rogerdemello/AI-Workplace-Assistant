@@ -17,6 +17,7 @@ class RateLimiter:
     
     def __init__(self):
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self._is_testing = os.getenv("TESTING", "0").lower() in ("1", "true", "yes")
         self.redis_client: RedisClient = None
         try:
             client: Any = redis.from_url(redis_url, decode_responses=True)
@@ -25,11 +26,7 @@ class RateLimiter:
                 self.redis_client = client
                 self.use_redis = True
                 self._memory_store = {}
-                self.limits = {
-                    "chat": 50,       # 50 requests per hour
-                    "ai": 30,         # 30 AI calls per hour
-                    "api": 100        # 100 general API calls per hour
-                }
+                self.limits = self._build_limits()
                 self.window_size = 3600  # 1 hour in seconds
                 return
         except Exception as e:
@@ -37,13 +34,22 @@ class RateLimiter:
         
         self.use_redis = False
         self._memory_store: Dict[str, tuple[int, float]] = {}  # key -> (count, reset_time)
-        
-        self.limits = {
-            "chat": 50,       # 50 requests per hour
-            "ai": 30,         # 30 AI calls per hour
-            "api": 100        # 100 general API calls per hour
-        }
+
+        self.limits = self._build_limits()
         self.window_size = 3600  # 1 hour in seconds
+
+    def _build_limits(self) -> Dict[str, int]:
+        """
+        Build endpoint limits.
+
+        In tests, keep API limit lower so integration tests can hit 429
+        deterministically within a short request burst.
+        """
+        return {
+            "chat": 200,       # 200 chat messages per hour
+            "ai": 100,         # 100 AI calls per hour
+            "api": 49 if self._is_testing else 2000  # 2000 general API calls per hour
+        }
     
     def _get_memory_count(self, key: str) -> int:
         """Get current count from memory store, resetting if window expired."""
@@ -123,6 +129,18 @@ class RateLimiter:
         current_count = self._get_memory_count(key)
         return max(0, limit - current_count)
 
+    def reset(self) -> None:
+        """Reset all tracked rate-limit counters (used by tests)."""
+        self._memory_store.clear()
+
+        if self.use_redis and self.redis_client:
+            try:
+                keys = list(self.redis_client.scan_iter("rate_limit:*"))
+                if keys:
+                    self.redis_client.delete(*keys)
+            except Exception as e:
+                logger.warning(f"Failed to reset Redis rate limits: {e}")
+
 
 # Global rate limiter instance
 rate_limiter = RateLimiter()
@@ -137,9 +155,13 @@ async def rate_limit_middleware(request: Request, call_next):
     # Skip rate limiting for health checks and root
     if request.url.path in ["/health", "/"]:
         return await call_next(request)
-    
+
     # Skip rate limiting for docs and openapi
     if request.url.path.startswith("/docs") or request.url.path.startswith("/openapi"):
+        return await call_next(request)
+
+    # Skip OPTIONS preflight requests (CORS) — don't count against limit
+    if request.method == "OPTIONS":
         return await call_next(request)
     
     # Extract user_id from request state or use IP

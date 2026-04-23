@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from ..database import Base
+from ..core.time import utcnow_naive
 
 
 class ConversationMemory(Base):
@@ -13,6 +14,6 @@ class ConversationMemory(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     summary = Column(Text, nullable=False)
     tags = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=utcnow_naive, index=True)
     
     user = relationship("User", back_populates="memory")

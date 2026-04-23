@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from ..database import Base
+from ..core.time import utcnow_naive
 
 
 class Document(Base):
@@ -15,8 +16,8 @@ class Document(Base):
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
     checksum_sha256 = Column(String(64), nullable=True)
     is_active = Column(Boolean, default=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
 
@@ -30,6 +31,6 @@ class DocumentChunk(Base):
     content = Column(Text, nullable=False)
     embedding_id = Column(String(255), nullable=False, index=True)
     embedding_provider_id = Column(UUID(as_uuid=True), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
     
     document = relationship("Document", back_populates="chunks")

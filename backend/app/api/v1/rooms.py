@@ -3,9 +3,10 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta, time
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ...database import get_db
+from ...core.time import utcnow_naive
 from ...auth import get_current_user, require_roles
 from ...models.user import User, UserRole
 from ...models.room import Room, RoomBooking
@@ -38,8 +39,7 @@ class RoomResponse(BaseModel):
     is_active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RoomBookingCreate(BaseModel):
@@ -58,8 +58,7 @@ class RoomBookingResponse(BaseModel):
     end_time: datetime
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TimeSlot(BaseModel):
@@ -257,7 +256,7 @@ def book_room(
     if booking.start_time >= booking.end_time:
         raise HTTPException(status_code=400, detail="End time must be after start time")
     
-    if booking.start_time < datetime.utcnow():
+    if booking.start_time < utcnow_naive():
         raise HTTPException(status_code=400, detail="Cannot book for a past time")
     
     # Check for booking conflicts
@@ -339,7 +338,7 @@ def cancel_booking(
         raise HTTPException(status_code=403, detail="Not authorized to cancel this booking")
     
     # Check if booking is in the past
-    if booking.start_time < datetime.utcnow():
+    if booking.start_time < utcnow_naive():
         raise HTTPException(status_code=400, detail="Cannot cancel a past booking")
     
     db.delete(booking)

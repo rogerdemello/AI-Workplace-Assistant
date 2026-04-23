@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from ..database import Base
+from ..core.time import utcnow_naive
 
 
 class UserProfile(Base):
@@ -15,7 +16,7 @@ class UserProfile(Base):
     department = Column(String(100), nullable=True)
     preferences = Column(JSON, nullable=True)
     last_summary = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     
     user = relationship("User", back_populates="profile")

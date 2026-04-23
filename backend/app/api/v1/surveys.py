@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
@@ -45,8 +45,7 @@ class SurveyResponseModel(BaseModel):
     created_by: Optional[UUID]
     created_at: Any
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SurveyListResponse(BaseModel):
@@ -57,8 +56,7 @@ class SurveyListResponse(BaseModel):
     allow_anonymous: bool
     created_at: Any
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SurveyRespond(BaseModel):

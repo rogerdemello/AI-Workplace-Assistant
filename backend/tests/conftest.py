@@ -4,12 +4,16 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, String
+from sqlalchemy import create_engine, String, UUID as SQLUUID
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.types import TypeDecorator, CHAR
+from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
 import uuid as uuid_module
+
+SQLiteTypeCompiler.visit_UUID = lambda self, type_, **kw: "CHAR(36)"
+SQLiteTypeCompiler.visit_JSONB = lambda self, type_, **kw: "JSON"
 
 os.environ["AZURE_OPENAI_API_KEY"] = "test-api-key"
 os.environ["AZURE_OPENAI_ENDPOINT"] = "https://test.openai.azure.com/"
@@ -51,6 +55,11 @@ def _compile_uuid_for_sqlite(_type, _compiler, **_kwargs):
     return "CHAR(36)"
 
 
+@compiles(SQLUUID, "sqlite")
+def _compile_sql_uuid_for_sqlite(_type, _compiler, **_kwargs):
+    return "CHAR(36)"
+
+
 DATABASE_URL = "sqlite:///./test.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -70,6 +79,16 @@ def setup_test_db():
         Base.metadata.drop_all(bind=engine)
     except Exception:
         pytest.skip("Database tables creation failed")
+
+
+@pytest.fixture(scope="function", autouse=True)
+def reset_rate_limiter_state():
+    from app.middleware.rate_limit import get_rate_limiter
+
+    limiter = get_rate_limiter()
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 @pytest.fixture(scope="function")

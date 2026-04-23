@@ -19,6 +19,7 @@ class AzureOpenAIClient:
         self.api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY", "")
         self.endpoint = endpoint or os.getenv("AZURE_OPENAI_ENDPOINT", "")
         self.deployment = deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
+        self.embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "").strip()
         self.api_version = api_version
 
         if not self.api_key or not self.endpoint:
@@ -74,7 +75,7 @@ class AzureOpenAIClient:
             raise
 
     def embeddings(self, text: str, engine: Optional[str] = None) -> List[float]:
-        embedding_engine = engine or f"{self.deployment}-embedding"
+        embedding_engine = engine or self.embedding_deployment or f"{self.deployment}-embedding"
         response = self.client.embeddings.create(
             model=embedding_engine,
             input=text

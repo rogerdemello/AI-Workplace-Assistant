@@ -27,14 +27,14 @@ Deliver a trusted, human-like digital workplace companion that employees can use
 | Goal | Target |
 |------|--------|
 | HR query auto-resolution | >= 80% |
-| Median bot response time | < 5 seconds |
+| Median assistant response time | < 5 seconds |
 | Employee engagement uplift | +15% in 2 quarters |
 | Manual ticket volume reduction | -40% |
 | Attrition risk prediction accuracy | >= 70% |
 
 ## 4. Scope
 ### 4.1 In Scope
-- Conversational chatbot for HR and workplace support.
+- Friendly HR partner for HR and workplace support.
 - RAG-based policy and FAQ answering.
 - HR ticket automation and escalation.
 - Email drafting support.
@@ -60,7 +60,7 @@ Deliver a trusted, human-like digital workplace companion that employees can use
 - Monitor unresolved issues and escalations.
 - Review sentiment trends and attrition risk signals.
 - Configure surveys and content.
-- Audit policy responses and bot performance.
+- Audit policy responses and assistant performance.
 
 ### 5.3 IT/Security Admin
 - Manage integrations, access controls, audit logs, and compliance settings.
@@ -161,7 +161,7 @@ Acceptance criteria:
 
 ## 7. System Architecture
 ### 7.1 High-Level Architecture
-Client Layer (Web/Slack/Teams/Mobile)  
+Client Layer (Web/Slack/Teams)  
 -> API Gateway  
 -> Backend Services  
 -> AI Layer (Intent + RAG + Generation + Guardrails)  

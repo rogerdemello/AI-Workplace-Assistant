@@ -4,7 +4,43 @@ interface ChatBridgeRequest {
   message: string;
   state?: {
     conversationId?: string;
+    intent?: string;
+    step?: string;
   };
+  userEmail?: string;
+  userName?: string;
+  authToken?: string;
+}
+
+async function parsePayload(request: NextRequest): Promise<ChatBridgeRequest | null> {
+  const contentType = request.headers.get('content-type') || '';
+
+  if (contentType.includes('multipart/form-data')) {
+    const form = await request.formData();
+    const stateRaw = String(form.get('state') || '');
+    let state: ChatBridgeRequest['state'] | undefined;
+    if (stateRaw) {
+      try {
+        state = JSON.parse(stateRaw) as ChatBridgeRequest['state'];
+      } catch {
+        state = undefined;
+      }
+    }
+
+    return {
+      message: String(form.get('message') || ''),
+      state,
+      userEmail: String(form.get('userEmail') || ''),
+      userName: String(form.get('userName') || ''),
+      authToken: String(form.get('authToken') || ''),
+    };
+  }
+
+  try {
+    return (await request.json()) as ChatBridgeRequest;
+  } catch {
+    return null;
+  }
 }
 
 interface BackendStartResponse {
@@ -20,14 +56,29 @@ interface BackendChatResponse {
   conversation_state?: Record<string, unknown>;
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+function apiBaseUrl(): string {
+  return (
+    process.env.BACKEND_API_URL?.replace(/\/$/, '') ||
+    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '') ||
+    'http://127.0.0.1:8000'
+  );
+}
 
-async function getDemoToken(): Promise<string | null> {
+async function getChatJwt(payload: ChatBridgeRequest): Promise<string | null> {
+  const base = apiBaseUrl();
+  const email = (payload.userEmail || 'demo@example.com').trim() || 'demo@example.com';
+  const name = (payload.userName || 'Demo User').trim() || 'Demo User';
+
+  const trimmed = payload.authToken?.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+
   try {
-    const loginResponse = await fetch(`${API_BASE_URL}/api/v1/demo/login`, {
+    const loginResponse = await fetch(`${base}/api/v1/demo/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Demo User', email: 'demo@example.com' }),
+      body: JSON.stringify({ name, email }),
       cache: 'no-store',
     });
 
@@ -43,11 +94,8 @@ async function getDemoToken(): Promise<string | null> {
 }
 
 export async function POST(request: NextRequest) {
-  let payload: ChatBridgeRequest;
-
-  try {
-    payload = (await request.json()) as ChatBridgeRequest;
-  } catch {
+  const payload = await parsePayload(request);
+  if (!payload) {
     return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
   }
 
@@ -56,9 +104,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'message is required' }, { status: 400 });
   }
 
-  const token = await getDemoToken();
+  const base = apiBaseUrl();
+  let token = await getChatJwt(payload);
   if (!token) {
-    return NextResponse.json({ error: 'Unable to authenticate chat request' }, { status: 502 });
+    return NextResponse.json(
+      {
+        error: 'Unable to authenticate chat request',
+        hint: 'Start the FastAPI backend and sign in so a JWT is available, or ensure demo login works for this user email.',
+        backendBase: base,
+      },
+      { status: 502 }
+    );
   }
 
   let conversationId = payload.state?.conversationId;
@@ -68,21 +124,25 @@ export async function POST(request: NextRequest) {
   };
 
   if (!conversationId) {
-    const startResponse = await fetch(`${API_BASE_URL}/api/v1/chat/conversations/start`, {
+    const startResponse = await fetch(`${base}/api/v1/chat/conversations/start`, {
       method: 'POST',
       headers: authHeaders,
       cache: 'no-store',
     });
 
     if (!startResponse.ok) {
-      return NextResponse.json({ error: 'Failed to start chat conversation' }, { status: 502 });
+      const detail = await startResponse.text();
+      return NextResponse.json(
+        { error: 'Failed to start chat conversation', upstreamStatus: startResponse.status, detail: detail.slice(0, 400) },
+        { status: 502 }
+      );
     }
 
     const startData = (await startResponse.json()) as BackendStartResponse;
     conversationId = startData.conversation_id;
   }
 
-  const chatResponse = await fetch(`${API_BASE_URL}/api/v1/chat/conversations/${conversationId}/respond`, {
+  const chatResponse = await fetch(`${base}/api/v1/chat/conversations/${conversationId}/respond`, {
     method: 'POST',
     headers: authHeaders,
     body: JSON.stringify({ message }),
@@ -90,7 +150,11 @@ export async function POST(request: NextRequest) {
   });
 
   if (!chatResponse.ok) {
-    return NextResponse.json({ error: 'Failed to get chat response' }, { status: 502 });
+    const detail = await chatResponse.text();
+    return NextResponse.json(
+      { error: 'Failed to get chat response', upstreamStatus: chatResponse.status, detail: detail.slice(0, 400) },
+      { status: 502 }
+    );
   }
 
   const chatData = (await chatResponse.json()) as BackendChatResponse;

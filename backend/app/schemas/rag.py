@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
@@ -10,8 +10,7 @@ class DocumentUploadResponse(BaseModel):
     chunks: int
     status: str
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentChunkResponse(BaseModel):
@@ -20,8 +19,7 @@ class DocumentChunkResponse(BaseModel):
     chunk_index: int
     content: str
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentListResponse(BaseModel):
@@ -31,8 +29,7 @@ class DocumentListResponse(BaseModel):
     created_at: datetime
     chunks_count: int = 0
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentDetailResponse(BaseModel):
@@ -43,5 +40,4 @@ class DocumentDetailResponse(BaseModel):
     created_at: datetime
     chunks_count: int = 0
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

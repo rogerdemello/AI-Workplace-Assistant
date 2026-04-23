@@ -5,6 +5,7 @@ import httpx
 import json
 import base64
 from ..config import settings
+from ..core.time import utcnow_naive
 
 
 class CalendarService:
@@ -295,6 +296,126 @@ class CalendarService:
             "attendees": attendees,
             "status": "confirmed"
         }
+
+    async def list_events(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        max_results: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List events from provider calendar and normalize response shape."""
+        start = start_date or utcnow_naive()
+        end = end_date or (start + timedelta(days=7))
+        max_results = max(1, min(max_results, 250))
+
+        if self.provider == "google":
+            return await self._list_google_events(start, end, max_results)
+        if self.provider == "microsoft":
+            return await self._list_microsoft_events(start, end, max_results)
+        return []
+
+    async def _list_google_events(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        max_results: int,
+    ) -> List[Dict[str, Any]]:
+        url = f"{self.GOOGLE_CALENDAR_API}/calendars/primary/events"
+        params = {
+            "timeMin": start_date.isoformat() + "Z",
+            "timeMax": end_date.isoformat() + "Z",
+            "singleEvents": True,
+            "orderBy": "startTime",
+            "maxResults": max_results,
+        }
+
+        response = await self._make_request("GET", url, params=params)
+        items = response.get("items", [])
+
+        normalized: List[Dict[str, Any]] = []
+        for item in items:
+            attendees = [
+                a.get("email")
+                for a in item.get("attendees", [])
+                if a.get("email")
+            ]
+            normalized.append(
+                {
+                    "id": item.get("id", f"gcal_{uuid4()}"),
+                    "title": item.get("summary", "Untitled event"),
+                    "start_time": item.get("start", {}).get("dateTime") or item.get("start", {}).get("date"),
+                    "end_time": item.get("end", {}).get("dateTime") or item.get("end", {}).get("date"),
+                    "attendees": attendees,
+                    "status": item.get("status", "confirmed"),
+                    "provider": "google",
+                    "web_link": item.get("htmlLink"),
+                }
+            )
+
+        return normalized
+
+    async def _list_microsoft_events(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        max_results: int,
+    ) -> List[Dict[str, Any]]:
+        url = f"{self.MICROSOFT_GRAPH_API}/me/events"
+        params = {
+            "$top": max_results,
+            "$orderby": "start/dateTime",
+            "$filter": (
+                f"start/dateTime ge '{start_date.isoformat()}' "
+                f"and end/dateTime le '{end_date.isoformat()}'"
+            ),
+        }
+
+        response = await self._make_request("GET", url, params=params)
+        items = response.get("value", [])
+
+        normalized: List[Dict[str, Any]] = []
+        for item in items:
+            attendees = [
+                (a.get("emailAddress") or {}).get("address")
+                for a in item.get("attendees", [])
+                if (a.get("emailAddress") or {}).get("address")
+            ]
+            normalized.append(
+                {
+                    "id": item.get("id", f"ms_{uuid4()}"),
+                    "title": item.get("subject", "Untitled event"),
+                    "start_time": (item.get("start") or {}).get("dateTime"),
+                    "end_time": (item.get("end") or {}).get("dateTime"),
+                    "attendees": attendees,
+                    "status": ((item.get("responseStatus") or {}).get("response") or "accepted"),
+                    "provider": "microsoft",
+                    "web_link": item.get("webLink"),
+                }
+            )
+
+        return normalized
+
+    async def delete_event(self, event_id: str) -> bool:
+        """
+        Delete a calendar event.
+
+        Returns False only when the event does not exist, otherwise raises for
+        provider/API errors.
+        """
+        if self.provider == "google":
+            url = f"{self.GOOGLE_CALENDAR_API}/calendars/primary/events/{event_id}"
+        elif self.provider == "microsoft":
+            url = f"{self.MICROSOFT_GRAPH_API}/me/events/{event_id}"
+        else:
+            raise ValueError("Unsupported provider")
+
+        try:
+            await self._make_request("DELETE", url)
+            return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return False
+            raise
     
     async def _create_google_event(
         self,

@@ -5,9 +5,9 @@ interface Ticket {
   id: string
   query: string
   category: string
-  status: 'open' | 'in_progress' | 'resolved' | 'escalated' | 'closed'
-  priority: 'low' | 'medium' | 'high' | 'critical'
-  created_at: string
+  status?: string | null
+  priority?: string | null
+  created_at?: string | null
 }
 
 interface TicketListProps {
@@ -54,14 +54,14 @@ export function TicketList({ tickets, onSelect }: TicketListProps) {
                 <p className="text-sm text-muted-foreground mt-1">{ticket.category}</p>
               </div>
               <div className="flex flex-col gap-2 items-end">
-                <Badge className={statusColors[ticket.status]}>{ticket.status.replace('_', ' ')}</Badge>
-                <span className={`text-xs font-medium ${priorityColors[ticket.priority]}`}>
-                  {ticket.priority}
+                <Badge className={statusColors[ticket.status || 'open']} data-testid="ticket-status">{(ticket.status || 'open').replace('_', ' ')}</Badge>
+                <span className={`text-xs font-medium ${priorityColors[ticket.priority || 'medium']}`} data-testid="ticket-priority">
+                  {ticket.priority || 'medium'}
                 </span>
               </div>
             </div>
-            <p className="text-xs text-muted-foreground mt-3">
-              {new Date(ticket.created_at).toLocaleDateString()}
+            <p className="text-xs text-muted-foreground mt-3" data-testid="ticket-created-at">
+              {ticket.created_at ? new Date(ticket.created_at).toLocaleDateString() : '—'}
             </p>
           </CardContent>
         </Card>

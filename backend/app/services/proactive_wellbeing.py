@@ -16,8 +16,11 @@ from sqlalchemy import and_, func
 import json
 import logging
 
+from ..events import event_bus
+from ..events.events import DomainEvent, EVENT_RISK_DETECTED
 from ..models.conversation import Message, Conversation
-from ..models.user import User
+from ..core.time import utcnow_naive
+from ..models.user import User, UserStatus
 from .emotional_memory import EmotionalMemory
 from .sentiment import SentimentService
 
@@ -42,7 +45,7 @@ class WellbeingAlert:
         self.message = message
         self.details = details
         self.is_anonymous = is_anonymous
-        self.created_at = datetime.utcnow()
+        self.created_at = utcnow_naive()
     
     def to_dict(self) -> Dict:
         result = {
@@ -115,14 +118,26 @@ class ProactiveWellbeingMonitor:
         
         if highest_severity_alert:
             self._alert_history.append(highest_severity_alert.to_dict())
+            try:
+                event_bus.publish(
+                    DomainEvent(
+                        name=EVENT_RISK_DETECTED,
+                        payload={
+                            "user_id": str(user_id),
+                            "alert_type": highest_severity_alert.alert_type,
+                            "severity": highest_severity_alert.severity,
+                            "is_anonymous": highest_severity_alert.is_anonymous,
+                        },
+                    )
+                )
+            except Exception:
+                logger.warning("Failed to publish risk_detected event", exc_info=True)
         
         return highest_severity_alert
     
     def check_all_users(self) -> List[WellbeingAlert]:
         """Check wellbeing for all active users. Returns list of alerts."""
-        users = self.db.query(User).filter(
-            User.status == "active"
-        ).all()
+        users = self.db.query(User).filter(User.status == UserStatus.active).all()
         
         alerts = []
         for user in users:
@@ -196,7 +211,7 @@ class ProactiveWellbeingMonitor:
         ).filter(
             and_(
                 Conversation.user_id == user_id,
-                Message.created_at >= datetime.utcnow() - timedelta(days=30)
+                Message.created_at >= utcnow_naive() - timedelta(days=30)
             )
         ).count()
         
@@ -205,8 +220,8 @@ class ProactiveWellbeingMonitor:
         ).filter(
             and_(
                 Conversation.user_id == user_id,
-                Message.created_at >= datetime.utcnow() - timedelta(days=60),
-                Message.created_at < datetime.utcnow() - timedelta(days=30)
+                Message.created_at >= utcnow_naive() - timedelta(days=60),
+                Message.created_at < utcnow_naive() - timedelta(days=30)
             )
         ).count()
         
@@ -237,7 +252,7 @@ class ProactiveWellbeingMonitor:
         ).filter(
             and_(
                 Conversation.user_id == user_id,
-                Message.created_at >= datetime.utcnow() - timedelta(days=7)
+                Message.created_at >= utcnow_naive() - timedelta(days=7)
             )
         ).all()
         

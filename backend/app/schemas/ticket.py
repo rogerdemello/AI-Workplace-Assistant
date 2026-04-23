@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
@@ -17,10 +17,31 @@ class TicketPriority(str, Enum):
     high = "high"
     critical = "critical"
 
+class TicketCategory(str, Enum):
+    general = "general"
+    leave = "leave"
+    payroll = "payroll"
+    benefits = "benefits"
+    it_support = "it_support"
+    complaint = "complaint"
+    policy = "policy"
+    hr = "hr"
+    it = "it"
+    facilities = "facilities"
+    finance = "finance"
+    management = "management"
+
 class TicketCreate(BaseModel):
     query: str
-    category: str
+    category: TicketCategory
     priority: TicketPriority = TicketPriority.medium
+
+    @field_validator('query')
+    @classmethod
+    def query_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Query must be a non-empty string')
+        return v
 
 class TicketUpdate(BaseModel):
     status: Optional[TicketStatus] = None
@@ -44,8 +65,7 @@ class TicketResponse(BaseModel):
     sla_due_at: Optional[datetime] = None
     sla_warning: bool = False
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class TicketMessageResponse(BaseModel):
     id: UUID
@@ -54,5 +74,13 @@ class TicketMessageResponse(BaseModel):
     message_text: str
     created_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TicketAssigneeResponse(BaseModel):
+    id: UUID
+    name: str
+    email: str
+    role: str
+
+    model_config = ConfigDict(from_attributes=True)

@@ -4,16 +4,20 @@ import tempfile
 import os
 from typing import List, Optional
 from uuid import UUID
+import logging
 
 from ...database import get_db
+from ...core.feature_flags import get_feature_flags
 from ...schemas.rag import DocumentUploadResponse, DocumentListResponse, DocumentDetailResponse
 from ...auth import get_current_user
 from ...models.user import User
 from ...models.document import Document
 from ...services.rag_ingest import RAGIngestService
 from ...services.rag_retrieve import RAGRetrieveService
+from ...services.rag import RAGOrchestrator
 
 router = APIRouter(prefix="/rag", tags=["rag"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/documents", response_model=DocumentUploadResponse)
@@ -115,8 +119,21 @@ def search_documents(
     
     Returns top-k relevant document chunks with similarity scores.
     """
+    if not get_feature_flags().enable_rag:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Policy knowledge base is disabled by configuration",
+        )
+
     service = RAGRetrieveService(db)
-    results = service.search(query, top_k=top_k, threshold=threshold)
+    try:
+        results = service.search(query, top_k=top_k, threshold=threshold)
+    except Exception as exc:
+        logger.exception("RAG search failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Policy knowledge base is temporarily unavailable: {exc}",
+        ) from exc
     
     return {
         "query": query,
@@ -136,7 +153,27 @@ def search_with_answer(
     
     Returns answer with source citations for HR assistant.
     """
-    service = RAGRetrieveService(db)
-    result = service.search_with_citations(query)
-    
-    return result
+    if not get_feature_flags().enable_rag:
+        return {
+            "answer": "Policy knowledge base is disabled by configuration.",
+            "citations": [],
+            "sources": [],
+            "source": "disabled",
+        }
+
+    try:
+        retrieve_service = RAGRetrieveService(db)
+        orchestrator = RAGOrchestrator(db=db, retrieve_service=retrieve_service)
+        return orchestrator.ask(query)
+    except Exception as exc:
+        logger.exception("RAG answer generation failed")
+        return {
+            "answer": (
+                "Policy knowledge base is temporarily unavailable. "
+                "Please check with HR while we restore document search."
+            ),
+            "citations": [],
+            "sources": [],
+            "source": "fallback",
+            "error": str(exc),
+        }

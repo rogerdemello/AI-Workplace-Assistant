@@ -2,16 +2,27 @@ from typing import Dict, Optional, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
 from ..ai_client import get_ai_client
+from ..config import settings
 
 EMAIL_TYPES = ["leave_request", "follow_up", "complaint", "resignation", "general"]
 TONES = ["formal", "neutral", "friendly"]
 
 
 class EmailDraftService:
-    def __init__(self, db: Optional[Session] = None, user_id: Optional[UUID] = None):
+    def __init__(self, db: Optional[Session] = None, user_id: Optional[UUID] = None, use_mock: Optional[bool] = None):
         self.db = db
         self.user_id = user_id
-        self.ai_client = get_ai_client(use_mock=True)
+
+        if use_mock is None:
+            has_real_config = (
+                bool(settings.AZURE_OPENAI_API_KEY)
+                and settings.AZURE_OPENAI_API_KEY != "mock-key"
+                and bool(settings.AZURE_OPENAI_ENDPOINT)
+                and "mock" not in settings.AZURE_OPENAI_ENDPOINT.lower()
+            )
+            use_mock = not has_real_config
+
+        self.ai_client = get_ai_client(use_mock=use_mock)
     
     def generate_draft(
         self,

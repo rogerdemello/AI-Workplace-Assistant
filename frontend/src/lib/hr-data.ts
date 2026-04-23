@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase';
 import { ensureBackendAuthToken } from '@/lib/backend-auth';
 
-export type TicketStatus = 'Open' | 'In Review' | 'Resolved' | 'Escalated';
+export type TicketStatus = 'Open' | 'In Review' | 'Resolved' | 'Escalated' | 'Closed';
 
 export interface SentimentPoint {
   date: string;
@@ -19,6 +19,10 @@ export interface TicketRow {
   anonymous: boolean;
   createdAt: string;
   category: string;
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  assignedTo?: string | null;
+  slaDueAt?: string | null;
+  slaWarning?: boolean;
 }
 
 export interface EmployeeInsightRow {
@@ -37,6 +41,10 @@ export interface DashboardMetrics {
   openTickets: number;
   totalTickets: number;
   aiSummary: string;
+  departmentsInView: number;
+  enps?: number;
+  attritionRiskPct?: number;
+  activeUsers?: number;
 }
 
 export interface DashboardData {
@@ -44,56 +52,59 @@ export interface DashboardData {
   sentimentPoints: SentimentPoint[];
   tickets: TicketRow[];
   employees: EmployeeInsightRow[];
+  weeklyQuality: WeeklyQuality;
+  departmentBreakdown?: Array<{
+    department: string;
+    positive: number;
+    neutral: number;
+    negative: number;
+    score: number;
+    total_messages: number;
+  }>;
 }
 
-interface BackendUserRow {
-  id: string;
-  employee_id: string | null;
-  name: string;
-  department_id: string | null;
-  updated_at: string | null;
+export interface WeeklyQuality {
+  windowDays: number;
+  feedbackResponses: number;
+  avgCsat: number;
+  helpfulRate: number;
+  detractorRate: number;
+  avgFirstResponseSeconds: number;
+  conversationsMeasured: number;
+  qualityLabel: string;
 }
 
-interface BackendDepartmentRow {
-  id: string;
-  name: string;
+function emptyDashboard(aiSummary: string): DashboardData {
+  return {
+    metrics: {
+      engagementScore: 0,
+      riskLevel: 'Low',
+      openTickets: 0,
+      totalTickets: 0,
+      aiSummary,
+      departmentsInView: 0,
+    },
+    sentimentPoints: [],
+    tickets: [],
+    employees: [],
+    weeklyQuality: defaultWeeklyQuality(),
+  };
 }
 
-interface BackendRiskRow {
-  user_id: string;
-  risk_score: number;
+function defaultWeeklyQuality(): WeeklyQuality {
+  return {
+    windowDays: 7,
+    feedbackResponses: 0,
+    avgCsat: 0,
+    helpfulRate: 0,
+    detractorRate: 0,
+    avgFirstResponseSeconds: 0,
+    conversationsMeasured: 0,
+    qualityLabel: 'Insufficient feedback',
+  };
 }
 
-interface BackendSentimentRow {
-  user_id: string;
-  score: number;
-  created_at: string;
-}
 
-const fallbackSentiment: SentimentPoint[] = [
-  { date: '2026-03-30', positive: 54, neutral: 28, negative: 18 },
-  { date: '2026-03-31', positive: 58, neutral: 26, negative: 16 },
-  { date: '2026-04-01', positive: 61, neutral: 24, negative: 15 },
-  { date: '2026-04-02', positive: 63, neutral: 23, negative: 14 },
-  { date: '2026-04-03', positive: 60, neutral: 25, negative: 15 },
-  { date: '2026-04-04', positive: 66, neutral: 22, negative: 12 },
-  { date: '2026-04-05', positive: 69, neutral: 20, negative: 11 },
-];
-
-const fallbackTickets: TicketRow[] = [
-  { id: 'T-1001', employeeId: 'EMP-204', issue: 'Payroll tax deduction looks incorrect', against: 'Payroll', status: 'Open', anonymous: false, createdAt: '2026-04-05T08:15:00Z', category: 'Payroll' },
-  { id: 'T-1002', employeeId: 'EMP-118', issue: 'Need two days leave for family event', against: 'People Ops', status: 'In Review', anonymous: false, createdAt: '2026-04-04T12:05:00Z', category: 'Leave' },
-  { id: 'T-1003', employeeId: 'EMP-331', issue: 'Manager communication has been escalating stress', against: 'Engineering', status: 'Escalated', anonymous: true, createdAt: '2026-04-03T18:20:00Z', category: 'Complaint' },
-  { id: 'T-1004', employeeId: 'EMP-087', issue: 'Question about remote work policy', against: 'People Ops', status: 'Resolved', anonymous: false, createdAt: '2026-04-02T09:40:00Z', category: 'Policy' },
-];
-
-const fallbackEmployees: EmployeeInsightRow[] = [
-  { id: '1', employeeId: 'EMP-204', name: 'Sarah Connor', sentimentScore: 84, riskScore: 22, lastActive: '10 mins ago', department: 'Engineering' },
-  { id: '2', employeeId: 'EMP-118', name: 'John Smith', sentimentScore: 46, riskScore: 74, lastActive: '2 hours ago', department: 'Sales' },
-  { id: '3', employeeId: 'EMP-331', name: 'Emily Chen', sentimentScore: 68, riskScore: 31, lastActive: 'Just now', department: 'Marketing' },
-  { id: '4', employeeId: 'EMP-087', name: 'Michael Chang', sentimentScore: 55, riskScore: 58, lastActive: '1 day ago', department: 'Engineering' },
-  { id: '5', employeeId: 'EMP-552', name: 'Jessica Davis', sentimentScore: 92, riskScore: 14, lastActive: '5 mins ago', department: 'HR' },
-];
 
 function average(values: number[]): number {
   if (!values.length) {
@@ -109,52 +120,153 @@ function riskLabel(score: number): 'Low' | 'Medium' | 'High' {
   return 'Low';
 }
 
-function sentimentFromEntry(entry: Record<string, any>): 'positive' | 'neutral' | 'negative' {
-  const raw = String(entry.sentiment ?? entry.label ?? entry.sentiment_label ?? '').toLowerCase();
-
-  if (raw.includes('pos')) return 'positive';
-  if (raw.includes('neg')) return 'negative';
-  return 'neutral';
+function isOpenTicketStatus(status: TicketStatus): boolean {
+  return status !== 'Resolved' && status !== 'Closed';
 }
 
-function sentimentSeriesFromMessages(messages: Array<Record<string, any>>): SentimentPoint[] {
-  const grouped = new Map<string, { positive: number; neutral: number; negative: number }>();
-
-  for (const message of messages) {
-    const createdAt = new Date(message.created_at ?? new Date().toISOString());
-    const key = createdAt.toISOString().slice(0, 10);
-    const bucket = grouped.get(key) ?? { positive: 0, neutral: 0, negative: 0 };
-    bucket[sentimentFromEntry(message)] += 1;
-    grouped.set(key, bucket);
-  }
-
-  return Array.from(grouped.entries())
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([date, bucket]) => ({ date, ...bucket }));
-}
-
-async function safeSelect(table: string): Promise<Array<Record<string, any>>> {
-  if (!supabase) {
-    return [];
-  }
-
-  const { data, error } = await supabase.from(table).select('*').order('created_at', { ascending: false });
-  if (error || !data) {
-    return [];
-  }
-
-  return data as Array<Record<string, any>>;
-}
-
-function ticketStatusLabel(status: string): TicketStatus {
+export function ticketStatusLabel(status: string): TicketStatus {
   const value = status.toLowerCase();
-  if (value === 'resolved' || value === 'closed') return 'Resolved';
+  if (value === 'resolved') return 'Resolved';
+  if (value === 'closed') return 'Closed';
   if (value === 'escalated') return 'Escalated';
   if (value === 'in_progress') return 'In Review';
   return 'Open';
 }
 
-const API_BASE = () => (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_URL) || 'http://localhost:8000';
+/** Map FastAPI `TicketResponse` fields to dashboard table rows. */
+export function mapFastApiTicketToRow(t: {
+  id: string;
+  user_id: string;
+  query: string;
+  category: string;
+  status: string;
+  created_at: string;
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  assigned_to?: string | null;
+  sla_due_at?: string | null;
+  sla_warning?: boolean;
+}): TicketRow {
+  return {
+    id: String(t.id),
+    employeeId: String(t.user_id).replace(/-/g, '').slice(0, 8).toUpperCase(),
+    issue: t.query,
+    against: t.category,
+    status: ticketStatusLabel(String(t.status ?? 'open')),
+    anonymous: false,
+    createdAt: String(t.created_at ?? new Date().toISOString()),
+    category: String(t.category ?? 'General'),
+    priority: (t.priority ?? 'medium') as TicketRow['priority'],
+    assignedTo: t.assigned_to ?? null,
+    slaDueAt: t.sla_due_at ?? null,
+    slaWarning: Boolean(t.sla_warning),
+  };
+}
+
+const API_BASE = () =>
+  (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '')) ||
+  'http://127.0.0.1:8000';
+
+/**
+ * Shape returned by GET /hr/dashboard (the upgraded hr_dashboard route).
+ */
+interface HrDashboardPayload {
+  engagement_score: number;
+  enps: number;
+  risk_level: 'Low' | 'Medium' | 'High';
+  attrition_risk_pct: number;
+  open_tickets: number;
+  total_tickets: number;
+  active_users: number;
+  resolution_rate: number;
+  avg_response_time: number;
+  /** Daily sentiment trend for the last N days */
+  sentiment_trend: SentimentPoint[];
+  department_breakdown: Array<{
+    department: string;
+    positive: number;
+    neutral: number;
+    negative: number;
+    score: number;
+    total_messages: number;
+  }>;
+  employees: Array<{
+    id: string;
+    employee_id: string;
+    name: string;
+    sentiment_score: number;
+    risk_score: number;
+    last_active: string;
+    department: string;
+  }>;
+  ai_summary: string;
+  weekly_quality?: {
+    window_days: number;
+    feedback_responses: number;
+    avg_csat: number;
+    helpful_rate: number;
+    detractor_rate: number;
+    avg_first_response_seconds: number;
+    conversations_measured: number;
+    quality_label: string;
+  };
+}
+
+/**
+ * Fetch the full HR dashboard bundle from GET /hr/dashboard.
+ * This is the rich SQLAlchemy-powered endpoint with eNPS, dept breakdown, etc.
+ */
+async function fetchHrDashboardBundle(): Promise<HrDashboardPayload | null> {
+  if (typeof window === 'undefined') return null;
+  await ensureBackendAuthToken();
+  const token = localStorage.getItem('auth_token');
+  if (!token) return null;
+  try {
+    const res = await fetch(`${API_BASE()}/hr/dashboard`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      console.warn('[hr-data] /hr/dashboard returned', res.status, res.statusText);
+      return null;
+    }
+    return (await res.json()) as HrDashboardPayload;
+  } catch {
+    return null;
+  }
+}
+
+function mapBundleEmployees(rows: HrDashboardPayload['employees']): EmployeeInsightRow[] {
+  return rows.map((e) => ({
+    id: e.id,
+    employeeId: e.employee_id,
+    name: e.name,
+    sentimentScore: e.sentiment_score,
+    riskScore: e.risk_score,
+    lastActive: e.last_active,
+    department: e.department,
+  }));
+}
+
+function distinctDepartments(employees: EmployeeInsightRow[]): number {
+  return new Set(employees.map((e) => e.department)).size;
+}
+
+function mapWeeklyQuality(row: HrDashboardPayload['weekly_quality'] | undefined): WeeklyQuality {
+  if (!row) {
+    return defaultWeeklyQuality();
+  }
+
+  return {
+    windowDays: Number(row.window_days ?? 7),
+    feedbackResponses: Number(row.feedback_responses ?? 0),
+    avgCsat: Number(row.avg_csat ?? 0),
+    helpfulRate: Number(row.helpful_rate ?? 0),
+    detractorRate: Number(row.detractor_rate ?? 0),
+    avgFirstResponseSeconds: Number(row.avg_first_response_seconds ?? 0),
+    conversationsMeasured: Number(row.conversations_measured ?? 0),
+    qualityLabel: String(row.quality_label ?? 'Insufficient feedback'),
+  };
+}
 
 /**
  * Tickets created in chat go to FastAPI Postgres (`POST /api/v1/tickets`), not Supabase.
@@ -184,116 +296,73 @@ async function fetchTicketsFromFastAPI(): Promise<TicketRow[] | null> {
       category: string;
       status: string;
       created_at: string;
+      priority?: 'low' | 'medium' | 'high' | 'critical';
+      assigned_to?: string | null;
+      sla_due_at?: string | null;
+      sla_warning?: boolean;
     }>;
-    return rows.map((ticket, index) => ({
-      id: String(ticket.id),
-      employeeId: String(ticket.user_id).replace(/-/g, '').slice(0, 8).toUpperCase(),
-      issue: ticket.query,
-      against: ticket.category,
-      status: ticketStatusLabel(String(ticket.status ?? 'open')),
-      anonymous: false,
-      createdAt: String(ticket.created_at ?? new Date().toISOString()),
-      category: String(ticket.category ?? 'General'),
-    }));
+    return rows.map((ticket) => mapFastApiTicketToRow(ticket));
   } catch {
     return null;
   }
 }
 
-function scoreToPercent(score: number): number {
-  return Math.max(0, Math.min(100, Math.round(((score + 1) / 2) * 100)));
-}
-
-function dateText(value?: string | null): string {
-  if (!value) {
-    return 'Recently';
-  }
-
-  return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
 export async function loadDashboardData(): Promise<DashboardData> {
-  const [apiTickets, messages, tickets, users, departments, risks, sentiments] = await Promise.all([
+  await ensureBackendAuthToken();
+  const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('auth_token');
+
+  const [apiTickets, bundle] = await Promise.all([
     fetchTicketsFromFastAPI(),
-    safeSelect('messages'),
-    safeSelect('tickets'),
-    safeSelect('users'),
-    safeSelect('departments'),
-    safeSelect('attrition_risk'),
-    safeSelect('sentiments'),
+    fetchHrDashboardBundle(),
   ]);
 
-  let mappedTickets: TicketRow[];
-  if (apiTickets !== null) {
-    mappedTickets = apiTickets;
-  } else if (tickets.length) {
-    mappedTickets = tickets.map((ticket, index) => ({
-      id: String(ticket.id ?? `T-${index + 1}`),
-      employeeId: String(ticket.user_id ?? ticket.employee_id ?? ticket.employeeId ?? 'EMP-000'),
-      issue: String(ticket.query ?? ticket.issue ?? 'Employee request'),
-      against: String(ticket.assigned_to ?? ticket.category ?? 'People Ops'),
-      status: ticketStatusLabel(String(ticket.status ?? 'open')),
-      anonymous: Boolean(ticket.anonymous ?? false),
-      createdAt: String(ticket.created_at ?? new Date().toISOString()),
-      category: String(ticket.category ?? 'General'),
-    }));
-  } else {
-    mappedTickets = fallbackTickets;
-  }
+  if (hasToken) {
+    const mappedTickets: TicketRow[] = apiTickets !== null ? apiTickets : [];
+    const openTicketsCount = mappedTickets.filter((ticket) => isOpenTicketStatus(ticket.status)).length;
 
-  const departmentMap = new Map<string, string>(
-    (departments as BackendDepartmentRow[]).map((department) => [department.id, department.name])
-  );
-  const riskMap = new Map<string, number>(
-    (risks as BackendRiskRow[]).map((risk) => [risk.user_id, Math.round(Number(risk.risk_score ?? 0) * 100)])
-  );
+    if (bundle) {
+      const mappedEmployees = mapBundleEmployees(bundle.employees);
+      const avgRisk = mappedEmployees.length ? average(mappedEmployees.map((e) => e.riskScore)) : 0;
+      const sentimentPoints = (bundle.sentiment_trend ?? []).length > 0 ? bundle.sentiment_trend : [];
 
-  const latestSentimentMap = new Map<string, BackendSentimentRow>();
-  for (const row of sentiments as BackendSentimentRow[]) {
-    const existing = latestSentimentMap.get(row.user_id);
-    if (!existing || new Date(row.created_at).getTime() > new Date(existing.created_at).getTime()) {
-      latestSentimentMap.set(row.user_id, row);
+      return {
+        metrics: {
+          engagementScore: Math.round(bundle.engagement_score),
+          riskLevel: bundle.risk_level ?? riskLabel(avgRisk),
+          openTickets: openTicketsCount,
+          totalTickets: mappedTickets.length,
+          aiSummary: bundle.ai_summary,
+          departmentsInView: Math.max(0, distinctDepartments(mappedEmployees)),
+          enps: bundle.enps,
+          attritionRiskPct: bundle.attrition_risk_pct,
+          activeUsers: bundle.active_users,
+        },
+        sentimentPoints,
+        tickets: mappedTickets,
+        employees: mappedEmployees,
+        weeklyQuality: mapWeeklyQuality(bundle.weekly_quality),
+        departmentBreakdown: bundle.department_breakdown,
+      };
     }
+
+    return {
+      metrics: {
+        engagementScore: 0,
+        riskLevel: 'Low',
+        openTickets: openTicketsCount,
+        totalTickets: mappedTickets.length,
+        aiSummary:
+          'Could not load /hr/dashboard. Verify FastAPI is running, you are signed in as HR (or admin), and NEXT_PUBLIC_API_URL points to the API. Tickets below still load from /api/v1/tickets when available.',
+        departmentsInView: 0,
+      },
+      sentimentPoints: [],
+      tickets: mappedTickets,
+      employees: [],
+      weeklyQuality: defaultWeeklyQuality(),
+    };
   }
 
-  const mappedEmployees: EmployeeInsightRow[] = users.length
-    ? (users as BackendUserRow[])
-        .filter((user) => user.name)
-        .map((user, index) => {
-          const sentimentRow = latestSentimentMap.get(user.id);
-          const sentimentScore = sentimentRow ? scoreToPercent(Number(sentimentRow.score ?? 0)) : 50;
-          const riskScore = riskMap.get(user.id) ?? Math.max(0, 100 - sentimentScore);
-
-          return {
-            id: String(user.id ?? index + 1),
-            employeeId: String(user.employee_id ?? `EMP-${index + 100}`),
-            name: String(user.name ?? 'Employee'),
-            sentimentScore,
-            riskScore,
-            lastActive: dateText(user.updated_at),
-            department: user.department_id ? (departmentMap.get(user.department_id) ?? 'Unknown') : 'Unknown',
-          };
-        })
-    : fallbackEmployees;
-
-  const sentimentPoints = messages.length ? sentimentSeriesFromMessages(messages) : fallbackSentiment;
-  const engagementScore = average(mappedEmployees.map((employee) => employee.sentimentScore));
-  const openTickets = mappedTickets.filter((ticket) => ticket.status !== 'Resolved').length;
-  const averageRisk = average(mappedEmployees.map((employee) => employee.riskScore));
-
-  return {
-    metrics: {
-      engagementScore,
-      riskLevel: riskLabel(averageRisk),
-      openTickets,
-      totalTickets: mappedTickets.length,
-      aiSummary:
-        'Sentiment is improving overall, but Engineering and Payroll are driving most of the open conversations. Use Mark to keep following up on leave requests and manager friction before they escalate.',
-    },
-    sentimentPoints,
-    tickets: mappedTickets,
-    employees: mappedEmployees,
-  };
+  return emptyDashboard('Sign in as HR to load the dashboard.');
 }
 
 export async function persistChatMessage(input: {

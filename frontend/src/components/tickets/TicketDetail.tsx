@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,15 +9,17 @@ interface Ticket {
   id: string
   query: string
   category: string
-  status: string
-  priority: string
-  created_at: string
+  status?: string | null
+  priority?: string | null
+  created_at?: string | null
+  sla_due_at?: string
+  sla_warning?: boolean
 }
 
 interface TicketDetailProps {
   ticket: Ticket
   onClose: () => void
-  onStatusUpdate?: (ticketId: string, newStatus: string) => void
+  onStatusUpdate?: (ticketId: string, newStatus: string) => Promise<void> | void
 }
 
 const statusOptions = [
@@ -29,15 +31,24 @@ const statusOptions = [
 ]
 
 export function TicketDetail({ ticket, onClose, onStatusUpdate }: TicketDetailProps) {
-  const [currentStatus, setCurrentStatus] = useState(ticket.status)
+  const [currentStatus, setCurrentStatus] = useState(ticket.status || 'open')
   const [isUpdating, setIsUpdating] = useState(false)
 
-  const handleStatusChange = (newStatus: string) => {
+  useEffect(() => {
+    setCurrentStatus(ticket.status || 'open')
+  }, [ticket.id, ticket.status])
+
+  const handleStatusChange = async (newStatus: string) => {
+    const previous = currentStatus
     setIsUpdating(true)
     setCurrentStatus(newStatus)
     
     if (onStatusUpdate) {
-      onStatusUpdate(ticket.id, newStatus)
+      try {
+        await onStatusUpdate(ticket.id, newStatus)
+      } catch {
+        setCurrentStatus(previous)
+      }
     }
     
     setTimeout(() => setIsUpdating(false), 500)
@@ -46,7 +57,7 @@ export function TicketDetail({ ticket, onClose, onStatusUpdate }: TicketDetailPr
   const currentStatusInfo = statusOptions.find(s => s.value === currentStatus) || statusOptions[0]
 
   return (
-    <Card className="h-fit">
+    <Card className="h-fit" data-testid="ticket-detail">
       <CardHeader>
         <div className="flex justify-between items-center">
           <CardTitle className="text-lg">Ticket Details</CardTitle>
@@ -71,7 +82,7 @@ export function TicketDetail({ ticket, onClose, onStatusUpdate }: TicketDetailPr
           
           <div className="space-y-2">
             <Label className="text-muted-foreground">Priority</Label>
-            <p className="capitalize">{ticket.priority}</p>
+            <p className="capitalize" data-testid="ticket-priority">{ticket.priority || 'Medium'}</p>
           </div>
         </div>
 
@@ -79,10 +90,10 @@ export function TicketDetail({ ticket, onClose, onStatusUpdate }: TicketDetailPr
         <div className="space-y-2">
           <Label className="text-muted-foreground">Status</Label>
           <div className="flex items-center gap-3">
-            <Badge className={currentStatusInfo.color}>
+            <Badge className={currentStatusInfo.color} data-testid="ticket-status">
               {currentStatusInfo.label}
             </Badge>
-            <Select value={currentStatus} onValueChange={handleStatusChange}>
+            <Select value={currentStatus || 'open'} onValueChange={handleStatusChange}>
               <SelectTrigger className="w-[140px]" disabled={isUpdating}>
                 <SelectValue placeholder="Change status" />
               </SelectTrigger>
@@ -100,8 +111,18 @@ export function TicketDetail({ ticket, onClose, onStatusUpdate }: TicketDetailPr
         {/* Created Date */}
         <div className="space-y-2">
           <Label className="text-muted-foreground">Created</Label>
-          <p className="text-sm">{new Date(ticket.created_at).toLocaleString()}</p>
+          <p className="text-sm" data-testid="ticket-created-at">{ticket.created_at ? new Date(ticket.created_at).toLocaleString() : '—'}</p>
         </div>
+
+        {/* SLA */}
+        {ticket.sla_due_at ? (
+          <div className="space-y-2">
+            <Label className="text-muted-foreground">SLA Due</Label>
+            <p className={`text-sm ${ticket.sla_warning ? 'text-amber-700 font-medium' : ''}`}>
+              {new Date(ticket.sla_due_at).toLocaleString()}
+            </p>
+          </div>
+        ) : null}
 
         {/* Ticket ID */}
         <div className="space-y-2">

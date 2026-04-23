@@ -1,10 +1,16 @@
-export type UserRole = 'employee' | 'hr' | 'admin';
+export type UserRole = 'employee' | 'hr' | 'admin' | 'manager';
 
 export interface AppSession {
   id?: string;
   email: string;
   name: string;
   role: UserRole;
+  loginAtMs?: number;
+  breakReminderAtMs?: number;
+  breakReminderShownAtMs?: number;
+  secondBreakReminderAtMs?: number;
+  secondBreakReminderShownAtMs?: number;
+  loginGreetingShownAtMs?: number;
 }
 
 const SESSION_KEY = 'mark-auth-session';
@@ -32,6 +38,24 @@ export function writeSession(session: AppSession): void {
   }
 
   window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+}
+
+export function patchSession(patch: Partial<AppSession>): AppSession | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const current = readSession();
+  if (!current) {
+    return null;
+  }
+
+  const updated: AppSession = {
+    ...current,
+    ...patch,
+  };
+  writeSession(updated);
+  return updated;
 }
 
 export function clearSession(): void {

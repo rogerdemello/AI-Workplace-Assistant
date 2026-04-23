@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
+from sqlalchemy.orm import Session
 
 from ...auth import get_current_user
+from ...database import get_db
 from ...models.user import User
 from ...services.sentiment import SentimentService
 
@@ -92,7 +94,8 @@ def analyze_batch(
 @router.get("/trend", response_model=SentimentTrendResponse)
 def get_sentiment_trend(
     days: int = 7,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Get sentiment trend analysis for the specified period.
@@ -103,7 +106,7 @@ def get_sentiment_trend(
     Returns:
         SentimentTrendResponse with trend statistics
     """
-    service = SentimentService()
+    service = SentimentService(db=db)
     result = service.get_trend(user_id=current_user.id, days=days)
     return SentimentTrendResponse(**result)
 

@@ -1,14 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 import secrets
 import hashlib
 from sqlalchemy.orm import Session
 
+from ...config import settings
 from ...database import get_db
+from ...core.time import utcnow_naive
 from ...auth import get_current_user
+from ...models.calendar_integration import CalendarIntegration
 from ...models.user import User
 from ...services.calendar import CalendarService
 
@@ -50,6 +53,7 @@ class OAuthCallbackRequest(BaseModel):
     """Request model for OAuth callback."""
     code: str = Field(..., description="Authorization code from OAuth provider")
     state: str = Field(..., description="State parameter for CSRF protection")
+    redirect_uri: Optional[str] = Field(default=None, description="OAuth redirect URI used during auth")
 
 
 class OAuthTokensResponse(BaseModel):
@@ -89,12 +93,25 @@ def get_user_calendar_token(
     """
     Retrieve stored calendar tokens for a user.
     
-    In a real implementation, this would query a user_calendar_tokens table.
-    For now, returns None to indicate no stored tokens.
+    Returns token metadata for the user's provider connection.
     """
-    # This is a placeholder - in production, you'd have a database table
-    # to store OAuth tokens per user per provider
-    return None
+    row = db.query(CalendarIntegration).filter(
+        CalendarIntegration.user_id == user_id,
+        CalendarIntegration.provider == provider,
+    ).first()
+
+    if not row:
+        return None
+
+    return {
+        "access_token": row.access_token,
+        "refresh_token": row.refresh_token,
+        "token_type": row.token_type,
+        "expires_at": row.expires_at,
+        "connected_at": row.connected_at,
+        "oauth_state_hash": row.oauth_state_hash,
+        "oauth_state_expires_at": row.oauth_state_expires_at,
+    }
 
 
 def store_user_calendar_token(
@@ -108,10 +125,63 @@ def store_user_calendar_token(
     """
     Store calendar tokens for a user.
     
-    In a real implementation, this would save to a user_calendar_tokens table.
+    Store or update OAuth tokens for the user/provider pair.
     """
-    # This is a placeholder - in production, you'd save to database
-    pass
+    row = db.query(CalendarIntegration).filter(
+        CalendarIntegration.user_id == user_id,
+        CalendarIntegration.provider == provider,
+    ).first()
+
+    expires_at = utcnow_naive() + timedelta(seconds=max(0, expires_in))
+
+    if not row:
+        row = CalendarIntegration(
+            user_id=user_id,
+            provider=provider,
+        )
+        db.add(row)
+
+    row.access_token = access_token
+    row.refresh_token = refresh_token
+    row.token_type = "Bearer"
+    row.expires_at = expires_at
+    row.connected_at = utcnow_naive()
+    row.oauth_state_hash = None
+    row.oauth_state_expires_at = None
+
+    db.commit()
+
+
+def store_oauth_state(user_id: UUID, provider: str, state: str, db: Session) -> None:
+    """Store hashed state for callback verification."""
+    row = db.query(CalendarIntegration).filter(
+        CalendarIntegration.user_id == user_id,
+        CalendarIntegration.provider == provider,
+    ).first()
+
+    if not row:
+        row = CalendarIntegration(user_id=user_id, provider=provider)
+        db.add(row)
+
+    row.oauth_state_hash = hash_state(state)
+    row.oauth_state_expires_at = utcnow_naive() + timedelta(minutes=10)
+    db.commit()
+
+
+def verify_oauth_state(user_id: UUID, provider: str, state: str, db: Session) -> bool:
+    """Verify callback state hash and expiration."""
+    row = db.query(CalendarIntegration).filter(
+        CalendarIntegration.user_id == user_id,
+        CalendarIntegration.provider == provider,
+    ).first()
+
+    if not row or not row.oauth_state_hash or not row.oauth_state_expires_at:
+        return False
+
+    if row.oauth_state_expires_at < utcnow_naive():
+        return False
+
+    return secrets.compare_digest(row.oauth_state_hash, hash_state(state))
 
 
 # ============== OAuth Endpoints ==============
@@ -119,6 +189,7 @@ def store_user_calendar_token(
 @router.get("/calendar/google/auth")
 async def google_oauth_redirect(
     redirect_uri: str = Query(..., description="OAuth redirect URI"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -127,9 +198,8 @@ async def google_oauth_redirect(
     Returns the authorization URL that the frontend should redirect to.
     """
     state = generate_state()
-    
-    # In production, store the hashed state for verification
-    # store_oauth_state(user_id, provider, hashed_state)
+
+    store_oauth_state(current_user.id, "google", state, db)
     
     auth_url = CalendarService.get_google_oauth_url(redirect_uri, state)
     
@@ -143,6 +213,7 @@ async def google_oauth_redirect(
 @router.get("/calendar/microsoft/auth")
 async def microsoft_oauth_redirect(
     redirect_uri: str = Query(..., description="OAuth redirect URI"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -151,9 +222,8 @@ async def microsoft_oauth_redirect(
     Returns the authorization URL that the frontend should redirect to.
     """
     state = generate_state()
-    
-    # In production, store the hashed state for verification
-    # store_oauth_state(user_id, provider, hashed_state)
+
+    store_oauth_state(current_user.id, "microsoft", state, db)
     
     auth_url = CalendarService.get_microsoft_oauth_url(redirect_uri, state)
     
@@ -182,11 +252,13 @@ async def oauth_callback(
             detail="Invalid provider. Must be 'google' or 'microsoft'"
         )
     
-    # In production, verify the state parameter here
-    # verify_oauth_state(current_user.id, provider, callback.state)
-    
-    # Get redirect URI from config or request
-    redirect_uri = f"{current_user.id}/callback"  # Placeholder
+    if not verify_oauth_state(current_user.id, provider, callback.state, db):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OAuth state"
+        )
+
+    redirect_uri = callback.redirect_uri or f"{settings.VITE_API_URL.rstrip('/')}/integrations/{provider}/callback"
     
     try:
         if provider == 'google':
@@ -213,7 +285,8 @@ async def oauth_callback(
         return {
             "status": "connected",
             "provider": provider,
-            "expires_in": tokens.get('expires_in')
+            "expires_in": tokens.get('expires_in'),
+            "expires_at": (utcnow_naive() + timedelta(seconds=tokens.get('expires_in', 3600))).isoformat()
         }
         
     except Exception as e:
@@ -297,8 +370,11 @@ async def get_calendar_status(
     token_data = get_user_calendar_token(current_user.id, provider, db)
     
     return {
-        "connected": token_data is not None,
-        "provider": provider
+        "connected": bool(token_data and token_data.get("access_token")),
+        "provider": provider,
+        "has_refresh_token": bool(token_data and token_data.get("refresh_token")),
+        "expires_at": token_data.get("expires_at").isoformat() if token_data and token_data.get("expires_at") else None,
+        "connected_at": token_data.get("connected_at").isoformat() if token_data and token_data.get("connected_at") else None,
     }
 
 
@@ -324,18 +400,16 @@ async def get_calendar_availability(
             detail="Invalid provider. Must be 'google' or 'microsoft'"
         )
     
-    # Get user's access token
     token_data = get_user_calendar_token(current_user.id, provider, db)
-    
-    # For demo purposes, use a placeholder token if not connected
-    # In production, require proper OAuth connection
-    if token_data:
-        access_token = token_data.get('access_token')
-        refresh_token = token_data.get('refresh_token')
-    else:
-        # Demo fallback - in production, this would require authentication
-        access_token = "demo_token"
-        refresh_token = None
+
+    if not token_data or not token_data.get("access_token"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{provider} calendar is not connected. Complete OAuth connection first."
+        )
+
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token")
     
     calendar_service = CalendarService(provider, access_token, refresh_token)
     
@@ -385,16 +459,16 @@ async def create_calendar_event(
             detail="End time must be after start time"
         )
     
-    # Get user's access token
     token_data = get_user_calendar_token(current_user.id, provider, db)
-    
-    # For demo purposes, use a placeholder token if not connected
-    if token_data:
-        access_token = token_data.get('access_token')
-        refresh_token = token_data.get('refresh_token')
-    else:
-        access_token = "demo_token"
-        refresh_token = None
+
+    if not token_data or not token_data.get("access_token"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{provider} calendar is not connected. Complete OAuth connection first."
+        )
+
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token")
     
     calendar_service = CalendarService(provider, access_token, refresh_token)
     
@@ -408,6 +482,9 @@ async def create_calendar_event(
             location=event.location,
             timezone=event.timezone
         )
+
+        if created_event.get("html_link") and not created_event.get("web_link"):
+            created_event["web_link"] = created_event["html_link"]
         
         return CalendarEventResponse(**created_event)
         
@@ -438,7 +515,7 @@ async def list_calendar_events(
     # Get user's access token
     token_data = get_user_calendar_token(current_user.id, provider, db)
     
-    if not token_data:
+    if not token_data or not token_data.get("access_token"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Calendar not connected. Please connect your calendar first."
@@ -446,9 +523,9 @@ async def list_calendar_events(
     
     # Set default date range if not provided
     if not start_date:
-        start_date = datetime.now()
+        start_date = utcnow_naive()
     if not end_date:
-        end_date = start_date + __import__('datetime').timedelta(days=7)
+        end_date = start_date + timedelta(days=7)
     
     calendar_service = CalendarService(
         provider, 
@@ -457,14 +534,16 @@ async def list_calendar_events(
     )
     
     try:
-        availability = await calendar_service.get_availability(
+        events = await calendar_service.list_events(
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            max_results=200,
         )
         
         return {
-            "events": availability,
-            "provider": provider
+            "events": events,
+            "provider": provider,
+            "count": len(events),
         }
         
     except Exception as e:
@@ -493,14 +572,31 @@ async def delete_calendar_event(
     # Get user's access token
     token_data = get_user_calendar_token(current_user.id, provider, db)
     
-    if not token_data:
+    if not token_data or not token_data.get("access_token"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Calendar not connected. Please connect your calendar first."
         )
-    
-    # In a full implementation, this would call the calendar API to delete the event
-    # For now, return a success response
+
+    calendar_service = CalendarService(
+        provider,
+        token_data.get("access_token"),
+        token_data.get("refresh_token"),
+    )
+
+    try:
+        deleted = await calendar_service.delete_event(event_id)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete event: {str(e)}"
+        )
+
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Calendar event not found"
+        )
     
     return {
         "status": "deleted",

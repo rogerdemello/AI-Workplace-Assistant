@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from ..database import Base
+from ..core.time import utcnow_naive
 
 
 class Room(Base):
@@ -15,7 +16,7 @@ class Room(Base):
     location = Column(String(100))
     facilities = Column(JSON, default=list)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
     bookings = relationship("RoomBooking", back_populates="room", cascade="all, delete-orphan")
 
@@ -29,7 +30,7 @@ class RoomBooking(Base):
     title = Column(String(255))
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
     room = relationship("Room", back_populates="bookings")
     user = relationship("User")

@@ -27,6 +27,9 @@ function inferRoleFromEmail(email: string): UserRole {
 	if (email.toLowerCase().includes('admin')) {
 		return 'admin';
 	}
+	if (email.toLowerCase().includes('manager')) {
+		return 'manager';
+	}
 	return email.toLowerCase().includes('hr') ? 'hr' : 'employee';
 }
 
@@ -47,6 +50,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		let role: UserRole = inferRoleFromEmail(email);
 		let name = inferName(email);
 		let userId: string | undefined;
+		const loginAtMs = Date.now();
+		const breakReminderAtMs = loginAtMs + 2 * 60 * 60 * 1000;
+		const secondBreakReminderAtMs = loginAtMs + Math.round((5 + Math.random()) * 60 * 60 * 1000);
 
 		if (hasSupabase && supabase) {
 			const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
@@ -69,7 +75,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			}
 		}
 
-		const newSession: AppSession = { id: userId, email, name, role };
+		const newSession: AppSession = {
+			id: userId,
+			email,
+			name,
+			role,
+			loginAtMs,
+			breakReminderAtMs,
+			secondBreakReminderAtMs,
+		};
 		writeSession(newSession);
 		setSession(newSession);
 
@@ -79,7 +93,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			? '/dashboard'
 			: role === 'hr'
 				? '/dashboard'
-				: '/employee';
+				: role === 'manager'
+					? '/manager'
+					: '/employee';
 		router.replace(redirect);
 	}
 

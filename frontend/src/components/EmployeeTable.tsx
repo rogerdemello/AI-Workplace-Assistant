@@ -21,7 +21,7 @@ export function EmployeeTable({ rows }: EmployeeTableProps) {
         !normalized ||
         row.name.toLowerCase().includes(normalized) ||
         row.employeeId.toLowerCase().includes(normalized) ||
-        row.department.toLowerCase().includes(normalized);
+        (row.department || '').toLowerCase().includes(normalized);
 
       const riskBand = row.riskScore >= 70 ? 'High' : row.riskScore >= 40 ? 'Medium' : 'Low';
       const matchesRisk = riskFilter === 'All' || riskBand === riskFilter;
@@ -69,7 +69,7 @@ export function EmployeeTable({ rows }: EmployeeTableProps) {
                   <tr key={row.id} className="transition-colors hover:bg-slate-50">
                     <td className="px-6 py-4">
                       <div className="font-medium text-slate-900">{row.name}</div>
-                      <div className="text-xs text-slate-400">{row.department}</div>
+                      <div className="text-xs text-slate-400">{row.department || '—'}</div>
                     </td>
                     <td className="px-6 py-4 text-slate-600">{row.employeeId}</td>
                     <td className="px-6 py-4">

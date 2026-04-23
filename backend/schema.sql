@@ -88,6 +88,23 @@ CREATE TABLE users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE calendar_integrations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider VARCHAR(32) NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT,
+    token_type VARCHAR(32) NOT NULL DEFAULT 'Bearer',
+    expires_at TIMESTAMPTZ,
+    connected_at TIMESTAMPTZ,
+    oauth_state_hash VARCHAR(128),
+    oauth_state_expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_calendar_integrations_user_provider UNIQUE (user_id, provider),
+    CONSTRAINT ck_calendar_integrations_provider CHECK (provider IN ('google', 'microsoft'))
+);
+
 CREATE TABLE integration_providers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     provider_key VARCHAR(100) NOT NULL UNIQUE,
@@ -323,12 +340,28 @@ CREATE TABLE activity_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE chat_feedback (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+    rating INT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    comment TEXT,
+    intent VARCHAR(100),
+    sentiment VARCHAR(32),
+    source VARCHAR(32) NOT NULL DEFAULT 'chat',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TRIGGER trg_departments_updated_at
 BEFORE UPDATE ON departments
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TRIGGER trg_users_updated_at
 BEFORE UPDATE ON users
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_calendar_integrations_updated_at
+BEFORE UPDATE ON calendar_integrations
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TRIGGER trg_integration_providers_updated_at
@@ -358,6 +391,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE INDEX idx_users_department ON users(department_id);
 CREATE INDEX idx_users_manager ON users(manager_id);
 CREATE INDEX idx_users_status ON users(status);
+CREATE INDEX idx_calendar_integrations_user_provider ON calendar_integrations(user_id, provider);
+CREATE INDEX idx_calendar_integrations_provider_connected ON calendar_integrations(provider, connected_at DESC);
 
 CREATE INDEX idx_conversations_user_started_at ON conversations(user_id, started_at DESC);
 CREATE INDEX idx_messages_conversation_created_at ON messages(conversation_id, created_at);
@@ -391,5 +426,8 @@ CREATE INDEX idx_email_logs_provider ON email_logs(provider_id);
 
 CREATE INDEX idx_activity_logs_user_created_at ON activity_logs(user_id, created_at DESC);
 CREATE INDEX idx_activity_logs_metadata_gin ON activity_logs USING GIN (metadata);
+CREATE INDEX idx_chat_feedback_user_created ON chat_feedback(user_id, created_at DESC);
+CREATE INDEX idx_chat_feedback_created ON chat_feedback(created_at DESC);
+CREATE INDEX idx_chat_feedback_rating ON chat_feedback(rating);
 
 COMMIT;
