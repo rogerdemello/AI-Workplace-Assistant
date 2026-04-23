@@ -565,6 +565,22 @@ class SmartChatService:
             except Exception:
                 return None
         return None
+
+    def _check_leave_overlap(self, leave_data: Dict):
+        start = self._coerce_date(leave_data.get("start_date"))
+        end = self._coerce_date(leave_data.get("end_date"))
+        if not start or not end:
+            return None
+        return (
+            self.db.query(LeaveRequest)
+            .filter(
+                LeaveRequest.user_id == self.user_id,
+                LeaveRequest.status.in_([LeaveStatus.pending, LeaveStatus.approved]),
+                LeaveRequest.start_date <= end,
+                LeaveRequest.end_date >= start,
+            )
+            .first()
+        )
     
     def _complete_leave(self, leave_data: Dict) -> str:
         start = self._coerce_date(leave_data.get("start_date"))
@@ -582,6 +598,13 @@ class SmartChatService:
 
         if (end - start).days + 1 > 60:
             return "Leave requests can't exceed 60 days. Could you adjust the dates?"
+
+        overlap = self._check_leave_overlap(leave_data)
+        if overlap:
+            return (
+                f"You already have leave from {overlap.start_date} to {overlap.end_date}. "
+                "Do you still want to proceed?"
+            )
 
         if start < _date.today():
             logger.info(f"Backdated leave request from user {self.user_id}: {start} to {end}")

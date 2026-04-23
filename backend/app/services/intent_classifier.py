@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Union
 from datetime import datetime
 
 from ..ai_client import get_ai_client, AzureOpenAIClient, MockAzureOpenAIClient
+from ..core.time import utcnow_naive
 from .hr_personality import FRIENDLY_SYSTEM_PROMPT, EMOTIONALLY_AWARE_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,19 @@ INTENTS = {
             "I need to submit a help desk ticket",
             "Report a workplace incident",
             "Create a maintenance request"
+        ]
+    },
+    "emotional": {
+        "description": "User expresses emotional distress or mental health concerns",
+        "examples": [
+            "I feel stressed",
+            "I am overwhelmed",
+            "I feel anxious",
+            "I feel depressed",
+            "I am burned out",
+            "I can't cope",
+            "I am exhausted emotionally",
+            "I need mental health support"
         ]
     },
     "general_query": {
@@ -225,7 +239,7 @@ Respond with JSON: {{"intent": "intent_name", "confidence": 0.0-1.0, "reasoning"
     ) -> None:
         """Add classification result to history tracking."""
         entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow_naive().isoformat(),
             "message": message,
             "user_id": user_id,
             "intent": result["intent"],
