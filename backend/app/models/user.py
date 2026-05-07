@@ -10,6 +10,7 @@ from ..core.time import utcnow_naive
 
 class UserRole(str, enum.Enum):
     employee = "employee"
+    manager = "manager"
     hr = "hr"
     admin = "admin"
 

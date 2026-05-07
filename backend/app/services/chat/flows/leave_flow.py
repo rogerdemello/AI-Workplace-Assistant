@@ -1,15 +1,18 @@
-"""Leave request conversation flow definition."""
+"""Leave request flow — strict slot order: dates → type → reason → confirm."""
 
 FLOW_NAME = "leave_request"
 
-required_fields = ["leave_type", "start_date", "end_date", "reason"]
-steps = ["leave_type", "start_date", "end_date", "reason", "done"]
+required_fields = ["start_date", "end_date", "leave_type", "reason"]
+steps = ["start_date", "end_date", "leave_type", "reason", "confirm", "done"]
 
 prompts = {
-    "leave_type": "Got you. What type of leave do you need — paid, sick, work from home, or unpaid?",
-    "start_date": "Got it. When does it start? (YYYY-MM-DD works great)",
-    "end_date": "Noted. And what is the last day?",
-    "end_date_invalid": "That end date looks earlier than the start date. What is the correct end date?",
-    "reason": "What's the reason for your leave?",
+    "start_date": "Sure — what start date should I use? (YYYY-MM-DD works great.)",
+    "end_date": "What end date works?",
+    "leave_type": "Which type of leave is this — paid, sick, work from home, or unpaid?",
+    "reason": "Got it — what's the reason for this leave?",
+    "confirm": "Want me to submit this leave for you?",
+    "end_date_invalid": "That end date looks earlier than the start date. What's the correct end date?",
+    "max_duration_exceeded": "Leave requests can't exceed 60 days. Could you adjust the dates?",
+    "start_date_invalid": "Start dates can't be more than 1 day in the past. Please use today or a future date.",
     "done": "Done. I have submitted your leave request and your manager will review it.",
 }

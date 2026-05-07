@@ -1,7 +1,14 @@
+import logging
+import uuid
 from typing import List, Optional, Tuple
 from uuid import UUID
 from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from ..models.ticket import Ticket, TicketMessage, TicketStatus, TicketPriority, SLA_HOURS
 from ..models.user import User, UserRole, UserStatus
@@ -129,23 +136,88 @@ class TicketService:
         ticket = self.get_ticket(ticket_id, user_id, is_hr)
         if not ticket:
             return []
-        return (
-            self.db.query(TicketMessage)
-            .filter(TicketMessage.ticket_id == ticket_id)
-            .order_by(TicketMessage.created_at.asc())
-            .all()
-        )
+        query = self.db.query(TicketMessage).filter(TicketMessage.ticket_id == ticket_id)
+        if not is_hr:
+            query = query.filter(TicketMessage.is_internal == 0)
+        try:
+            return query.order_by(TicketMessage.created_at.asc()).all()
+        except (ProgrammingError, OperationalError):
+            self.db.rollback()
+            logger.warning(
+                "ticket_messages ORM list failed; using column-safe fallback",
+                exc_info=True,
+            )
+            rows = self.db.execute(
+                text(
+                    """
+                    SELECT id, ticket_id, sender_id, message_text, created_at
+                    FROM ticket_messages
+                    WHERE ticket_id = :ticket_id
+                    ORDER BY created_at ASC
+                    """
+                ),
+                {"ticket_id": ticket_id},
+            ).fetchall()
+            out: List[TicketMessage] = []
+            for r in rows:
+                tm = TicketMessage(
+                    id=r[0],
+                    ticket_id=r[1],
+                    sender_id=r[2],
+                    message_text=r[3],
+                    is_internal=0,
+                )
+                tm.created_at = r[4]
+                out.append(tm)
+            return out
 
-    def add_message(self, ticket_id: UUID, sender_id: Optional[UUID], message_text: str) -> TicketMessage:
+    def add_message(self, ticket_id: UUID, sender_id: Optional[UUID], message_text: str, is_internal: bool = False) -> TicketMessage:
         message = TicketMessage(
             ticket_id=ticket_id,
             sender_id=sender_id,
-            message_text=message_text
+            message_text=message_text,
+            is_internal=1 if is_internal else 0,
         )
-        self.db.add(message)
-        self.db.commit()
-        self.db.refresh(message)
-        return message
+        try:
+            self.db.add(message)
+            self.db.commit()
+            self.db.refresh(message)
+            return message
+        except (ProgrammingError, OperationalError):
+            self.db.rollback()
+            logger.warning("ticket_messages ORM insert degraded; retrying without is_internal", exc_info=True)
+            mid = uuid.uuid4()
+            now = self._utcnow_naive()
+            try:
+                self.db.execute(
+                    text(
+                        """
+                        INSERT INTO ticket_messages (id, ticket_id, sender_id, message_text, created_at)
+                        VALUES (:id, :ticket_id, :sender_id, :message_text, :created_at)
+                        """
+                    ),
+                    {
+                        "id": mid,
+                        "ticket_id": ticket_id,
+                        "sender_id": sender_id,
+                        "message_text": message_text,
+                        "created_at": now,
+                    },
+                )
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                logger.exception("ticket_messages fallback insert failed")
+                raise
+            out = TicketMessage(
+                id=mid,
+                ticket_id=ticket_id,
+                sender_id=sender_id,
+                message_text=message_text,
+                is_internal=1 if is_internal else 0,
+            )
+            out.created_at = now
+            return out
 
     def list_assignees(self) -> List[User]:
         """Return active HR/Admin users that can be assigned to tickets."""
@@ -156,6 +228,16 @@ class TicketService:
             .order_by(User.name.asc())
             .all()
         )
+
+    def list_related_tickets(self, ticket: Ticket, limit: int = 6) -> List[Ticket]:
+        query = self.db.query(Ticket).filter(Ticket.id != ticket.id)
+
+        if ticket.hash:
+            query = query.filter(Ticket.hash == ticket.hash)
+        else:
+            query = query.filter(Ticket.category == ticket.category)
+
+        return query.order_by(Ticket.created_at.desc()).limit(max(1, min(limit, 20))).all()
     
     def get_sla_due_at(self, ticket: Ticket) -> datetime:
         return ticket.sla_due_at

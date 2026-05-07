@@ -16,6 +16,9 @@ from .models import hr_alert as _hr_alert_model  # noqa: F401 — register HrAle
 from .models import leave_request as _leave_request_model  # noqa: F401 — register LeaveRequest with Base.metadata
 from .models import personal_fact as _personal_fact_model  # noqa: F401 — register PersonalFact with Base.metadata
 from .models import onboarding_buddy as _onboarding_buddy_model  # noqa: F401 — register OnboardingBuddy with Base.metadata
+from .models import ticket_action_log as _ticket_action_log_model  # noqa: F401 — register TicketActionLog with Base.metadata
+from .models import hr_notification as _hr_notification_model  # noqa: F401 — register HrNotification with Base.metadata
+from .models import automation_rule as _automation_rule_model  # noqa: F401 — register AutomationRule with Base.metadata
 from .api.v1.auth import router as auth_router
 from .api.v1.demo_auth import router as demo_auth_router
 from .api.v1.chat import router as chat_router
@@ -24,6 +27,7 @@ from .api.v1.rag import router as rag_router
 from .api.v1.tickets import router as tickets_router
 from .api.v1.email import router as email_router
 from .api.v1.sentiment import router as sentiment_router
+from .api.v1.sentiment_alerts import router as sentiment_alerts_router
 from .api.v1.surveys import router as surveys_router
 from .api.v1.feedback import router as feedback_router
 from .api.v1.integrations import router as integrations_router
@@ -38,6 +42,13 @@ from .api.v1.mood import router as mood_router
 from .api.v1.appreciation import router as appreciation_router
 from .api.v1.onboarding import router as onboarding_router
 from .api.v1.buddies import router as buddies_router
+from .api.v1.portal import router as portal_router
+from .api.v1.users_directory import router as users_directory_router
+from .api.v1.billing import router as billing_router
+from .api.v1.automations import router as automations_router
+from .api.v1.realtime import router as realtime_router
+from .api.v1.workplace import router as workplace_router
+from .api.v1.webhooks import router as webhooks_router
 from .routes import hr_auth as hr_auth_routes
 from .routes import hr_dashboard as hr_dashboard_routes
 from .routes import hr_tickets as hr_tickets_routes
@@ -148,7 +159,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # CORS Configuration - Allow frontend origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["http://localhost:8080", "http://localhost:5173", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -203,6 +214,7 @@ app.include_router(rag_router, prefix="/api/v1")
 app.include_router(tickets_router, prefix="/api/v1")
 app.include_router(email_router, prefix="/api/v1")
 app.include_router(sentiment_router, prefix="/api/v1")
+app.include_router(sentiment_alerts_router, prefix="/api/v1")
 app.include_router(surveys_router, prefix="/api/v1")
 app.include_router(feedback_router, prefix="/api/v1")
 app.include_router(integrations_router, prefix="/api/v1")
@@ -217,6 +229,13 @@ app.include_router(mood_router, prefix="/api/v1")
 app.include_router(appreciation_router, prefix="/api/v1")
 app.include_router(onboarding_router, prefix="/api/v1")
 app.include_router(buddies_router, prefix="/api/v1")
+app.include_router(portal_router, prefix="/api/v1")
+app.include_router(users_directory_router, prefix="/api/v1")
+app.include_router(billing_router, prefix="/api/v1")
+app.include_router(automations_router, prefix="/api/v1")
+app.include_router(realtime_router, prefix="/api/v1")
+app.include_router(workplace_router, prefix="/api/v1")
+app.include_router(webhooks_router, prefix="/api/v1")
 app.include_router(hr_auth_routes.router, prefix="/hr")
 app.include_router(hr_auth_routes.legacy_router, prefix="/api/v1")
 app.include_router(hr_dashboard_routes.router, prefix="/hr")

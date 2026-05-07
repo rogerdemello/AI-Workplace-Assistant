@@ -10,6 +10,7 @@ from uuid import UUID
 import re
 
 from sqlalchemy import case, cast, func, or_
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 from sqlalchemy.types import Date
 
@@ -18,10 +19,15 @@ from ..core.time import utcnow_naive
 from ..models.analytics import MentalHealthScore
 from ..models.chat_feedback import ChatFeedback
 from ..models.department import Department
+from ..models.employee_score import EmployeeScore
+from ..models.message_signal import MessageSignal
+from ..models.sentiment_log import SentimentLog
 from ..models.risk_snapshot import RiskSnapshot
 from ..models.survey import SurveyResponse
 from ..models.ticket import Ticket, TicketStatus
 from ..models.user import User, UserRole, UserStatus
+from ..config import settings
+from .attrition import AttritionRiskService
 
 
 def _resolved_filter():
@@ -180,6 +186,86 @@ def sentiment_trend_days(db: Session, days: int = 14) -> List[Dict[str, Any]]:
     return out
 
 
+def emotion_trend_days(db: Session, days: int = 14) -> List[Dict[str, Any]]:
+    """Daily distribution of logged emotions from sentiment_logs."""
+    days = max(1, min(days, 90))
+    start = utcnow_naive() - timedelta(days=days - 1)
+    day_key = func.date(SentimentLog.created_at)
+    rows = (
+        db.query(day_key, SentimentLog.emotion, func.count(SentimentLog.id))
+        .filter(SentimentLog.created_at >= start)
+        .group_by(day_key, SentimentLog.emotion)
+        .all()
+    )
+
+    by_date: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for d, emotion, cnt in rows:
+        if d is None:
+            continue
+        key = str(d)
+        label = str(emotion or "neutral")
+        by_date[key][label] += int(cnt)
+
+    out: List[Dict[str, Any]] = []
+    for i in range(days):
+        d = (utcnow_naive() - timedelta(days=days - 1 - i)).date()
+        key = d.isoformat()
+        bucket = dict(by_date.get(key, {}))
+        total = sum(bucket.values())
+        if total == 0:
+            out.append({"date": key, "emotions": {}})
+            continue
+        percentages = {
+            emotion: round((count / total) * 100.0, 1)
+            for emotion, count in sorted(bucket.items(), key=lambda item: item[1], reverse=True)
+        }
+        out.append({"date": key, "emotions": percentages})
+    return out
+
+
+def emotion_trend_days_for_manager(db: Session, manager_id: UUID, days: int = 14) -> List[Dict[str, Any]]:
+    """Daily emotion mix from sentiment_logs for direct reports only."""
+    days = max(1, min(days, 90))
+    start = utcnow_naive() - timedelta(days=days - 1)
+    day_key = func.date(SentimentLog.created_at)
+    rows = (
+        db.query(day_key, SentimentLog.emotion, func.count(SentimentLog.id))
+        .join(User, User.id == SentimentLog.employee_id)
+        .filter(
+            SentimentLog.created_at >= start,
+            User.manager_id == manager_id,
+            User.role == UserRole.employee,
+            User.status == UserStatus.active,
+        )
+        .group_by(day_key, SentimentLog.emotion)
+        .all()
+    )
+
+    by_date: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for d, emotion, cnt in rows:
+        if d is None:
+            continue
+        key = str(d)
+        label = str(emotion or "neutral")
+        by_date[key][label] += int(cnt)
+
+    out: List[Dict[str, Any]] = []
+    for i in range(days):
+        d = (utcnow_naive() - timedelta(days=days - 1 - i)).date()
+        key = d.isoformat()
+        bucket = dict(by_date.get(key, {}))
+        total = sum(bucket.values())
+        if total == 0:
+            out.append({"date": key, "emotions": {}})
+            continue
+        percentages = {
+            emotion: round((count / total) * 100.0, 1)
+            for emotion, count in sorted(bucket.items(), key=lambda item: item[1], reverse=True)
+        }
+        out.append({"date": key, "emotions": percentages})
+    return out
+
+
 def _human_last_active(dt: Optional[datetime]) -> str:
     if not dt:
         return "Recently"
@@ -196,7 +282,7 @@ def _human_last_active(dt: Optional[datetime]) -> str:
 
 
 def employee_insights_for_hr(db: Session, limit: int = 50) -> List[Dict[str, Any]]:
-    """Employees + sentiment/risk derived from messages and tickets."""
+    """Employees + sentiment/risk derived from messages and tickets (batched for performance)."""
     limit = max(1, min(limit, 200))
 
     dept_name = {str(r.id): r.name for r in db.query(Department).all()}
@@ -212,91 +298,201 @@ def employee_insights_for_hr(db: Session, limit: int = 50) -> List[Dict[str, Any
         user_ids = [row[0] for row in db.query(func.distinct(Ticket.user_id)).limit(limit).all()]
         users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
 
+    if not users:
+        return []
+
+    user_ids = [u.id for u in users]
+    now = utcnow_naive()
+    sustained_wd = max(1, int(settings.SUSTAINED_NEGATIVE_WINDOW_DAYS))
+    sustained_start = now - timedelta(days=sustained_wd)
+    min_sustained = max(1, int(settings.SUSTAINED_NEGATIVE_MIN_MESSAGES))
+
+    # Bulk fetch all related data
+    scores = {s.employee_id: s for s in db.query(EmployeeScore).filter(EmployeeScore.employee_id.in_(user_ids)).all()}
+    risk_snaps = {}
+    for rs in db.query(RiskSnapshot).filter(RiskSnapshot.user_id.in_(user_ids)).order_by(RiskSnapshot.created_at.desc()).all():
+        if rs.user_id not in risk_snaps:
+            risk_snaps[rs.user_id] = rs
+    mh_scores = {}
+    for mh in db.query(MentalHealthScore).filter(MentalHealthScore.user_id.in_(user_ids)).order_by(MentalHealthScore.created_at.desc()).all():
+        if mh.user_id not in mh_scores:
+            mh_scores[mh.user_id] = mh
+
+    # Bulk fetch latest message timestamps per user
+    latest_msg_subq = (
+        db.query(Conversation.user_id, func.max(Message.created_at).label("last_msg_at"))
+        .join(Message, Message.conversation_id == Conversation.id)
+        .filter(Conversation.user_id.in_(user_ids))
+        .group_by(Conversation.user_id)
+        .subquery()
+    )
+    latest_msg_map = {row.user_id: row.last_msg_at for row in db.query(latest_msg_subq).all()}
+
+    # Bulk fetch open ticket counts per user
+    open_ticket_counts = {}
+    for row in (
+        db.query(Ticket.user_id, func.count(Ticket.id).label("cnt"))
+        .filter(
+            Ticket.user_id.in_(user_ids),
+            Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress, TicketStatus.escalated]),
+        )
+        .group_by(Ticket.user_id)
+        .all()
+    ):
+        open_ticket_counts[row.user_id] = row.cnt
+
+    # Bulk fetch sentiment logs per user
+    all_logs = (
+        db.query(SentimentLog)
+        .filter(SentimentLog.employee_id.in_(user_ids))
+        .all()
+    )
+    logs_by_user: Dict[str, List[SentimentLog]] = defaultdict(list)
+    for log in all_logs:
+        logs_by_user[str(log.employee_id)].append(log)
+
+    # Bulk fetch message signals per user (topics + complaints)
+    all_signals = (
+        db.query(MessageSignal)
+        .filter(MessageSignal.employee_id.in_(user_ids), MessageSignal.created_at >= now - timedelta(days=30))
+        .all()
+    )
+    signals_by_user: Dict[str, List[MessageSignal]] = defaultdict(list)
+    for sig in all_signals:
+        signals_by_user[str(sig.employee_id)].append(sig)
+
     out: List[Dict[str, Any]] = []
     for u in users:
-        last_msg = (
-            db.query(func.max(Message.created_at))
-            .join(Conversation, Message.conversation_id == Conversation.id)
-            .filter(Conversation.user_id == u.id)
-            .scalar()
-        )
+        uid = str(u.id)
+        score_row = scores.get(u.id)
+        risk_snapshot = risk_snaps.get(u.id)
+        mh = mh_scores.get(u.id)
 
-        sentiments = (
-            db.query(Message.sentiment)
-            .join(Conversation, Message.conversation_id == Conversation.id)
-            .filter(Conversation.user_id == u.id, Message.sender == MessageSender.user, Message.sentiment.isnot(None))
-            .order_by(Message.created_at.desc())
-            .limit(10)
-            .all()
-        )
-        pos = sum(1 for s in sentiments if s[0] == SentimentLabel.positive)
-        neg = sum(1 for s in sentiments if s[0] == SentimentLabel.negative)
-        neu = sum(1 for s in sentiments if s[0] == SentimentLabel.neutral)
-        total_s = len(sentiments)
-        if total_s == 0:
-            negative_sentiment_pct = 0.0
-            snapshot = (
-                db.query(RiskSnapshot)
-                .filter(RiskSnapshot.user_id == u.id)
-                .order_by(RiskSnapshot.created_at.desc())
-                .first()
-            )
-            if snapshot and snapshot.mood_score is not None:
-                sentiment_pct = int(round(snapshot.mood_score))
-            else:
-                sentiment_pct = 0
+        # Sentiment
+        if score_row:
+            sentiment_pct = int(score_row.sentiment_score or 0)
+        elif risk_snapshot and risk_snapshot.mood_score is not None:
+            sentiment_pct = int(round(risk_snapshot.mood_score))
         else:
-            negative_sentiment_pct = (neg / max(total_s, 1)) * 100.0
-            sentiment_pct = int(round(((pos + 0.5 * neu) / max(total_s, 1)) * 100))
+            sentiment_pct = 50
 
-        open_n = (
-            db.query(func.count(Ticket.id))
-            .filter(
-                Ticket.user_id == u.id,
-                Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress, TicketStatus.escalated]),
-            )
-            .scalar()
-            or 0
-        )
-        last_ts = last_msg or u.updated_at
-        days_inactive = max(0, int((utcnow_naive() - last_ts).days)) if last_ts else 0
-
-        risk_snapshot = (
-            db.query(RiskSnapshot)
-            .filter(RiskSnapshot.user_id == u.id)
-            .order_by(RiskSnapshot.created_at.desc())
-            .first()
-        )
-        if risk_snapshot and risk_snapshot.attrition_risk is not None:
+        # Risk
+        if score_row:
+            risk = int(score_row.risk_score or 0)
+        elif risk_snapshot and risk_snapshot.attrition_risk is not None:
             risk = int(min(100, round(risk_snapshot.attrition_risk * 100)))
         else:
             risk = 0
 
-        mh = (
-            db.query(MentalHealthScore)
-            .filter(MentalHealthScore.user_id == u.id)
-            .order_by(MentalHealthScore.created_at.desc())
-            .first()
-        )
-        mental_health_score = int(mh.score) if mh else None
+        mental_health_score = int(score_row.mental_health_score) if score_row else (int(mh.score) if mh else None)
+
+        last_ts = latest_msg_map.get(u.id) or u.updated_at
+        days_inactive = max(0, int((now - last_ts).days)) if last_ts else 0
+        open_n = open_ticket_counts.get(u.id, 0)
+
+        user_logs = logs_by_user.get(uid, [])
+        short_logs = [l for l in user_logs if l.created_at >= now - timedelta(days=7)]
+        long_logs = [l for l in user_logs if l.created_at >= now - timedelta(days=60)]
+        short_avg = round(sum(l.score for l in short_logs) / len(short_logs), 1) if short_logs else float(sentiment_pct)
+        long_avg = round(sum(l.score for l in long_logs) / len(long_logs), 1) if long_logs else float(sentiment_pct)
+        spike_alert = bool(long_avg - short_avg >= 15)
+
+        latest_sentiment_at = max((l.created_at for l in user_logs), default=None)
+        sentiment_sample_count_30d = len(long_logs)
+        volume_confidence = min(1.0, sentiment_sample_count_30d / 8.0)
+        if latest_sentiment_at:
+            age_days = max(0.0, (now - latest_sentiment_at).total_seconds() / 86400.0)
+            recency_confidence = 1.0 if age_days <= 1 else 0.8 if age_days <= 3 else 0.6 if age_days <= 7 else 0.4 if age_days <= 14 else 0.2
+        else:
+            recency_confidence = 0.2
+        sentiment_confidence = round((0.65 * volume_confidence) + (0.35 * recency_confidence), 2)
+        sentiment_confidence_band = "high" if sentiment_confidence >= 0.75 else "medium" if sentiment_confidence >= 0.45 else "low"
+
+        # Emotions
+        emotion_counts: Dict[str, int] = defaultdict(int)
+        for l in user_logs:
+            if l.created_at >= now - timedelta(days=30):
+                emotion_counts[str(l.emotion or "neutral")] += 1
+        top_emotion = max(emotion_counts.items(), key=lambda x: x[1])[0] if emotion_counts else "neutral"
+
+        # Topics
+        user_signals = signals_by_user.get(uid, [])
+        topic_counts: Dict[str, int] = defaultdict(int)
+        for sig in user_signals:
+            topic_counts[str(sig.topic or "general")] += 1
+        top_topic = max(topic_counts.items(), key=lambda x: x[1])[0] if topic_counts else "general"
+
+        complaints_5d = sum(1 for sig in user_signals if sig.created_at >= now - timedelta(days=5) and sig.severity in ("medium", "high"))
+        negative_turns_in_window = sum(1 for l in user_logs if l.created_at >= sustained_start and l.label == "negative")
+        sustained_risk_pattern = int(negative_turns_in_window) >= min_sustained
+        silent_risk = bool(days_inactive >= 5 and sentiment_pct < 55)
 
         dlabel = dept_name.get(str(u.department_id), "General") if u.department_id else "General"
+        narrative = [
+            f"Sentiment {'declining' if (score_row and score_row.trend_label == 'down') else 'stable'} ({int(long_avg)} -> {int(short_avg)})",
+            f"{complaints_5d} complaint-like signals in last 5 days",
+            f"Top topic: {top_topic.replace('_', ' ')}",
+            f"{'Silent risk detected' if silent_risk else 'Engagement active'}",
+        ]
+        if sustained_risk_pattern:
+            narrative.insert(0, f"Sustained negative pattern: {negative_turns_in_window} negative chat signals in last {sustained_wd} days")
 
         out.append(
             {
-                "id": str(u.id),
-                "employee_id": u.employee_id or str(u.id).replace("-", "")[:8].upper(),
+                "id": uid,
+                "employee_id": u.employee_id or uid.replace("-", "")[:8].upper(),
                 "name": u.name,
                 "sentiment_score": sentiment_pct,
                 "risk_score": risk,
                 "last_active": _human_last_active(last_ts),
                 "department": dlabel,
                 "mental_health_score": mental_health_score,
+                "risk_confidence": 0.0,
+                "risk_calibration_band": "low_confidence",
+                "risk_top_factors": [],
+                "trend": score_row.trend_label if score_row else "stable",
+                "delta": int(score_row.trend_delta) if score_row else 0,
+                "risk_label": "High" if risk >= 70 else ("Medium" if risk >= 40 else "Low"),
+                "short_term_trend": short_avg,
+                "long_term_trend": long_avg,
+                "spike_alert": spike_alert,
+                "top_topic": top_topic,
+                "top_emotion": top_emotion,
+                "sentiment_last_updated_at": latest_sentiment_at.isoformat() if latest_sentiment_at else None,
+                "sentiment_confidence": sentiment_confidence,
+                "sentiment_confidence_band": sentiment_confidence_band,
+                "complaints_5d": int(complaints_5d),
+                "silent_risk": silent_risk,
+                "sustained_risk_pattern": sustained_risk_pattern,
+                "negative_turns_in_window": int(negative_turns_in_window),
+                "narrative": narrative,
             }
         )
 
     out.sort(key=lambda x: x["risk_score"], reverse=True)
     return out
+
+
+def employee_insights_for_manager(db: Session, manager_id: UUID, limit: int = 50) -> List[Dict[str, Any]]:
+    """Manager-scoped view of direct reports only."""
+    limit = max(1, min(limit, 200))
+    reports = (
+        db.query(User.id)
+        .filter(
+            User.role == UserRole.employee,
+            User.status == UserStatus.active,
+            User.manager_id == manager_id,
+        )
+        .all()
+    )
+    report_id_set = {str(row[0]) for row in reports}
+    if not report_id_set:
+        return []
+
+    all_insights = employee_insights_for_hr(db=db, limit=1000)
+    filtered = [row for row in all_insights if row.get("id") in report_id_set]
+    filtered.sort(key=lambda x: int(x.get("risk_score", 0)), reverse=True)
+    return filtered[:limit]
 
 
 def build_ai_summary(db: Session, open_tickets: int) -> str:
@@ -341,12 +537,40 @@ def build_ai_summary(db: Session, open_tickets: int) -> str:
     if inactive_count >= 3:
         insights.append(f"{inactive_count} employees inactive for 5+ days — trigger wellbeing scan.")
 
+    manager_pattern = detect_manager_issue_pattern(db)
+    if manager_pattern:
+        insights.append(
+            f"Pattern detected: {manager_pattern['count']} signals around manager issues in team {manager_pattern['manager']}."
+        )
+
     if not insights:
         if open_tickets == 0:
             return "No open tickets right now — maintain weekly wellbeing reviews."
         return f"{open_tickets} open tickets with no dominant pattern yet — monitor trends daily."
 
     return " ".join(insights)
+
+
+def detect_manager_issue_pattern(db: Session, days: int = 7) -> Optional[Dict[str, Any]]:
+    since = utcnow_naive() - timedelta(days=max(1, min(days, 30)))
+    rows = (
+        db.query(User.manager_id, func.count(MessageSignal.id))
+        .join(User, User.id == MessageSignal.employee_id)
+        .filter(
+            MessageSignal.created_at >= since,
+            MessageSignal.topic == "manager_issue",
+            User.manager_id.isnot(None),
+        )
+        .group_by(User.manager_id)
+        .all()
+    )
+    if not rows:
+        return None
+    manager_id, count = max(rows, key=lambda x: int(x[1]))
+    if int(count) < 3:
+        return None
+    manager = db.query(User).filter(User.id == manager_id).first()
+    return {"manager_id": str(manager_id), "manager": manager.name if manager else "Unknown", "count": int(count)}
 
 
 def compute_weekly_quality(db: Session, window_days: int = 7) -> Dict[str, Any]:
@@ -413,3 +637,232 @@ def compute_weekly_quality(db: Session, window_days: int = 7) -> Dict[str, Any]:
         "conversations_measured": len(first_response_seconds),
         "quality_label": quality_label,
     }
+
+
+def manager_effectiveness_for_hr(db: Session, limit: int = 50) -> List[Dict[str, Any]]:
+    """Compute manager effectiveness from team sentiment, risk, engagement, and complaints."""
+    limit = max(1, min(limit, 200))
+    since = utcnow_naive() - timedelta(days=30)
+
+    all_active_users = db.query(User).filter(User.status == UserStatus.active).all()
+    all_active_employees = [u for u in all_active_users if u.role == UserRole.employee]
+    manager_id_set = {str(u.manager_id) for u in all_active_employees if u.manager_id is not None}
+    managers = [u for u in all_active_users if str(u.id) in manager_id_set]
+
+    employee_rows = employee_insights_for_hr(db, limit=1000)
+    employee_by_id = {row["id"]: row for row in employee_rows}
+
+    results: List[Dict[str, Any]] = []
+    for manager in managers:
+        reports = [u for u in all_active_employees if u.manager_id is not None and str(u.manager_id) == str(manager.id)]
+        if not reports:
+            continue
+
+        report_ids = [r.id for r in reports]
+        report_insights = [employee_by_id.get(str(rid)) for rid in report_ids if employee_by_id.get(str(rid))]
+        if report_insights:
+            avg_sentiment = round(sum(int(r["sentiment_score"]) for r in report_insights) / len(report_insights), 1)
+            avg_risk = round(sum(int(r["risk_score"]) for r in report_insights) / len(report_insights), 1)
+        else:
+            avg_sentiment = 50.0
+            avg_risk = 0.0
+
+        report_id_set = {str(rid) for rid in report_ids}
+        open_complaints = (
+            db.query(func.count(Ticket.id))
+            .filter(
+                Ticket.category == "complaint",
+                Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress, TicketStatus.escalated]),
+            )
+            .all()
+        )
+        # Robust matching across DB UUID adapters.
+        if open_complaints:
+            complaint_rows = (
+                db.query(Ticket.user_id)
+                .filter(
+                    Ticket.category == "complaint",
+                    Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress, TicketStatus.escalated]),
+                )
+                .all()
+            )
+            open_complaints = sum(1 for row in complaint_rows if str(row[0]) in report_id_set)
+        else:
+            open_complaints = 0
+
+        activity_rows = (
+            db.query(Conversation.user_id)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .filter(Message.created_at >= since)
+            .all()
+        )
+        active_reporters = len({str(row[0]) for row in activity_rows if str(row[0]) in report_id_set})
+        engagement_ratio = active_reporters / max(len(report_ids), 1)
+
+        effectiveness = (
+            0.45 * avg_sentiment
+            + 0.30 * (100.0 - avg_risk)
+            + 0.20 * (engagement_ratio * 100.0)
+            + 0.05 * max(0.0, 100.0 - min(100.0, open_complaints * 20.0))
+        )
+        effectiveness_score = round(max(0.0, min(100.0, effectiveness)), 1)
+        if effectiveness_score >= 75:
+            label = "strong"
+        elif effectiveness_score >= 55:
+            label = "steady"
+        else:
+            label = "needs_support"
+
+        results.append(
+            {
+                "manager_id": str(manager.id),
+                "manager_name": manager.name,
+                "team_size": len(report_ids),
+                "avg_sentiment_score": avg_sentiment,
+                "avg_risk_score": avg_risk,
+                "open_complaints": int(open_complaints),
+                "engagement_ratio": round(engagement_ratio, 2),
+                "effectiveness_score": effectiveness_score,
+                "effectiveness_label": label,
+            }
+        )
+
+    results.sort(key=lambda row: row["effectiveness_score"], reverse=True)
+    return results[:limit]
+
+
+def sentiment_analysis_source_drift(db: Session, *, days: int = 7) -> Dict[str, Any]:
+    """
+    Aggregate SentimentLog rows by analysis_source (llm / lexicon / hybrid / provided / unknown).
+    Used for HR visibility into classifier mix and drift over time.
+    """
+    days = max(1, min(int(days), 90))
+    since = utcnow_naive() - timedelta(days=days)
+    try:
+        rows = (
+            db.query(SentimentLog.analysis_source, func.count(SentimentLog.id))
+            .filter(SentimentLog.created_at >= since)
+            .group_by(SentimentLog.analysis_source)
+            .all()
+        )
+    except ProgrammingError:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return {
+            "window_days": days,
+            "total": 0,
+            "by_source": {},
+            "pct_by_source": {},
+        }
+    by_source: Dict[str, int] = defaultdict(int)
+    for src, cnt in rows:
+        key = (src or "unknown").strip().lower() or "unknown"
+        by_source[key] += int(cnt or 0)
+    total = sum(by_source.values())
+    pct_by_source = {k: round(100.0 * v / total, 1) for k, v in by_source.items()} if total else {}
+    return {
+        "window_days": days,
+        "total": total,
+        "by_source": dict(by_source),
+        "pct_by_source": pct_by_source,
+    }
+
+
+def sentiment_source_drift_timeseries(db: Session, *, days: int = 14) -> List[Dict[str, Any]]:
+    """Daily percentage mix of sentiment_logs.analysis_source (HR classifier drift over time)."""
+    days = max(1, min(int(days), 90))
+    start = utcnow_naive() - timedelta(days=days - 1)
+    day_key = func.date(SentimentLog.created_at)
+    src_label = func.lower(func.coalesce(SentimentLog.analysis_source, "unknown"))
+    try:
+        rows = (
+            db.query(day_key, src_label, func.count(SentimentLog.id))
+            .filter(SentimentLog.created_at >= start)
+            .group_by(day_key, src_label)
+            .all()
+        )
+    except ProgrammingError:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        rows = []
+
+    by_date: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for d, src, cnt in rows:
+        if d is None:
+            continue
+        key = str(d)
+        label = str(src or "unknown").strip().lower() or "unknown"
+        by_date[key][label] += int(cnt or 0)
+
+    out: List[Dict[str, Any]] = []
+    for i in range(days):
+        d = (utcnow_naive() - timedelta(days=days - 1 - i)).date()
+        key = d.isoformat()
+        bucket = dict(by_date.get(key, {}))
+        total = sum(bucket.values())
+        if total == 0:
+            out.append({"date": key, "sources": {}})
+            continue
+        percentages = {
+            src: round((count / total) * 100.0, 1)
+            for src, count in sorted(bucket.items(), key=lambda item: item[1], reverse=True)
+        }
+        out.append({"date": key, "sources": percentages})
+    return out
+
+
+def sentiment_source_drift_timeseries_for_manager(
+    db: Session, manager_id: UUID, *, days: int = 14
+) -> List[Dict[str, Any]]:
+    """Daily classifier-path mix for direct reports only (manager dashboard)."""
+    days = max(1, min(int(days), 90))
+    start = utcnow_naive() - timedelta(days=days - 1)
+    day_key = func.date(SentimentLog.created_at)
+    src_label = func.lower(func.coalesce(SentimentLog.analysis_source, "unknown"))
+    try:
+        rows = (
+            db.query(day_key, src_label, func.count(SentimentLog.id))
+            .join(User, User.id == SentimentLog.employee_id)
+            .filter(
+                SentimentLog.created_at >= start,
+                User.manager_id == manager_id,
+                User.role == UserRole.employee,
+                User.status == UserStatus.active,
+            )
+            .group_by(day_key, src_label)
+            .all()
+        )
+    except ProgrammingError:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        rows = []
+
+    by_date: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for d, src, cnt in rows:
+        if d is None:
+            continue
+        key = str(d)
+        label = str(src or "unknown").strip().lower() or "unknown"
+        by_date[key][label] += int(cnt or 0)
+
+    out: List[Dict[str, Any]] = []
+    for i in range(days):
+        d = (utcnow_naive() - timedelta(days=days - 1 - i)).date()
+        key = d.isoformat()
+        bucket = dict(by_date.get(key, {}))
+        total = sum(bucket.values())
+        if total == 0:
+            out.append({"date": key, "sources": {}})
+            continue
+        percentages = {
+            src: round((count / total) * 100.0, 1)
+            for src, count in sorted(bucket.items(), key=lambda item: item[1], reverse=True)
+        }
+        out.append({"date": key, "sources": percentages})
+    return out

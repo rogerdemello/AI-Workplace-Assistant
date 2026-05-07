@@ -50,7 +50,7 @@ class TestUserRegistration:
             "password": "password123",
             "name": "Invalid User"
         })
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 class TestUserLogin:
@@ -88,7 +88,7 @@ class TestUserLogin:
     def test_login_empty_credentials(self, client):
         """Test login with empty credentials."""
         response = client.post("/api/v1/auth/login", json={})
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 class TestGetCurrentUser:

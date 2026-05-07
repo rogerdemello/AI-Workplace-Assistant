@@ -1,6 +1,9 @@
 import json
 import logging
-from typing import Dict, List, Optional, Union
+import re
+import hashlib
+import time
+from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime
 
 from ..ai_client import get_ai_client, AzureOpenAIClient, MockAzureOpenAIClient
@@ -99,6 +102,46 @@ INTENTS = {
 
 INTENT_LIST = list(INTENTS.keys())
 
+# Fast-path regex routes — checked before LLM (ordered: most specific first)
+# Each tuple: (compiled_regex, intent, confidence, reasoning)
+_FAST_ROUTES: List[Tuple[re.Pattern, str, float, str]] = []
+
+
+def _build_fast_routes() -> List[Tuple[re.Pattern, str, float, str]]:
+    """Compile heuristic intent routes for sub-millisecond classification."""
+    routes: List[Tuple[str, str, float, str]] = [
+        # Leave request (apply for leave)
+        (r"\b(apply\s+(for\s+)?leave|request\s+(for\s+)?leave|book\s+leave|take\s+(a\s+)?day\s+off|take\s+time\s+off|need\s+\d+\s+days?\s+off|want\s+(a\s+)?vacation|going\s+on\s+vacation|need\s+a\s+personal\s+day|take\s+sick\s+leave|mental\s+health\s+day)\b", "leave_request", 0.92, "Fast-path: explicit leave request phrasing"),
+        # Leave balance (query only)
+        (r"\b(how\s+many\s+leaves?\s+((do\s+i\s+have|left|remaining|balance))|\bleave\s+balance\b|\bleaves?\s+left\b|\bremaining\s+leave\b|\bhow\s+much\s+leave\b|\bleave\s+days?\s+left\b)\b", "policy_query", 0.90, "Fast-path: leave balance inquiry"),
+        # Ticket / complaint
+        (r"\b(raise\s+a?\s+ticket|file\s+a?\s+complaint|report\s+(an?\s+)?issue|create\s+a?\s+ticket|submit\s+a?\s+ticket|complaint\s+about|problem\s+with\s+my|issue\s+with\s+my|something\s+is\s+broken|not\s+working)\b", "ticket_create", 0.92, "Fast-path: ticket or complaint phrasing"),
+        # Policy
+        (r"\b(what\s+(is|are)\s+(the\s+)?policy|handbook|company\s+rules?|remote\s+work\s+policy|wfh\s+policy|dress\s+code|overtime\s+policy|expense\s+policy|pto\s+(policy|rules?)|working\s+hours)\b", "policy_query", 0.90, "Fast-path: explicit policy query"),
+        # Benefits
+        (r"\b(health\s+insurance|dental\s+coverage|vision\s+insurance|401k|retirement\s+plan|stock\s+options|gym\s+membership|parental\s+leave|employee\s+benefits|what\s+benefits)\b", "benefits_question", 0.90, "Fast-path: benefits keyword"),
+        # Email draft
+        (r"\b(draft\s+(an?\s+)?email|write\s+(an?\s+)?email|help\s+me\s+compose|email\s+to\s+my|resignation\s+letter|follow[-\s]?up\s+email)\b", "email_draft", 0.91, "Fast-path: email drafting request"),
+        # Emotional / distress
+        (r"\b(i\s+feel\s+(stressed|anxious|depressed|overwhelmed|burned?\s+out|exhausted|hopeless|sad|empty)|i\s+can\'?t\s+cope|mental\s+health|i\s+need\s+therapy|panic\s+attack|want\s+to\s+quit|had\s+enough|not\s+okay|not\s+ok)\b", "emotional", 0.93, "Fast-path: emotional distress signal"),
+        # Reminder — NOTE: not fast-pathed; _apply_intent_keyword_fallback handles it after LLM classify
+        # Greeting / thanks
+        (r"^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening)|what\s+can\s+you\s+do|who\s+are\s+you)([\s,]|$|\!|\?|\.)", "general_query", 0.88, "Fast-path: greeting or intro"),
+        (r"^(thanks?|thank\s+you|thx|ty)(\s|$|\!|\.|\?)", "general_query", 0.88, "Fast-path: thanks"),
+        # Help
+        (r"\b(help\s+me|i\s+need\s+help|can\s+you\s+help|assist\s+me|what\s+can\s+you\s+help\s+with)\b", "general_query", 0.85, "Fast-path: help request"),
+    ]
+    compiled = []
+    for pattern, intent, conf, reason in routes:
+        try:
+            compiled.append((re.compile(pattern, re.IGNORECASE), intent, conf, reason))
+        except re.error as e:
+            logger.warning(f"Invalid fast-route regex '{pattern}': {e}")
+    return compiled
+
+
+_FAST_ROUTES = _build_fast_routes()
+
 # Intent history storage (in production, use a database)
 _intent_history: List[Dict] = []
 
@@ -112,10 +155,91 @@ class IntentClassifier:
         self.ai_client = ai_client or get_ai_client()
         self.confidence_threshold = confidence_threshold
 
-    def classify(self, message: str, user_id: Optional[str] = None) -> Dict:
-        """Classify the user message into one of the predefined intents."""
-        prompt = self._build_prompt(message)
+    def _fast_classify(self, message: str) -> Optional[Dict]:
+        """Sub-millisecond heuristic classifier for obvious intents."""
+        if not message:
+            return None
+        for regex, intent, confidence, reasoning in _FAST_ROUTES:
+            if regex.search(message):
+                return {
+                    "intent": intent,
+                    "confidence": confidence,
+                    "reasoning": reasoning,
+                }
+        return None
 
+    @staticmethod
+    def _cache_key(message: str) -> str:
+        """Normalized cache key for intent classification."""
+        normalized = message.strip().lower()[:200]
+        h = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+        return f"intent_classify:{h}"
+
+    def classify(self, message: str, user_id: Optional[str] = None) -> Dict:
+        """Classify the user message into one of the predefined intents.
+
+        Path:
+        1. Fast heuristic router (regex) — sub-millisecond.
+        2. Redis cache — avoids duplicate LLM calls within TTL.
+        3. LLM fallback — Azure OpenAI with JSON mode.
+        """
+        start_ts = time.perf_counter()
+        path = "fast"
+
+        # 1. Fast heuristic
+        fast_result = self._fast_classify(message)
+        if fast_result:
+            classification_result = fast_result
+        else:
+            # 2. Cache lookup
+            cache_key = self._cache_key(message)
+            try:
+                from ..cache import get_cached, set_cached
+                cached = get_cached(cache_key)
+                if cached:
+                    classification_result = cached
+                    path = "cache"
+                else:
+                    # 3. LLM fallback
+                    classification_result = self._llm_classify(message)
+                    path = "llm"
+                    set_cached(cache_key, classification_result, ttl=60)
+            except Exception:
+                # Cache unavailable — fall through to LLM
+                classification_result = self._llm_classify(message)
+                path = "llm"
+
+        duration_ms = round((time.perf_counter() - start_ts) * 1000, 2)
+        logger.info(
+            "intent_classify",
+            extra={
+                "classify_path": path,
+                "classify_duration_ms": duration_ms,
+                "intent": classification_result.get("intent"),
+                "confidence": classification_result.get("confidence"),
+                "message_preview": (message or "")[:60],
+            },
+        )
+
+        # Validate intent is in our list
+        intent = classification_result.get("intent", "general_query")
+        if intent not in INTENT_LIST:
+            intent = "general_query"
+            classification_result["confidence"] = min(classification_result.get("confidence", 0.5), 0.5)
+            classification_result["intent"] = intent
+
+        # Track history
+        self._add_to_history(
+            message=message,
+            user_id=user_id,
+            result=classification_result
+        )
+
+        return classification_result
+
+    def _llm_classify(self, message: str) -> Dict:
+        """LLM-based intent classification (original behavior)."""
+        prompt = self._build_prompt(message)
         try:
             response = self.ai_client.chat_completion(
                 messages=[
@@ -140,29 +264,11 @@ Remember: Be friendly and empathetic in your reasoning."""
             content = response["choices"][0]["message"]["content"]
             result = json.loads(content)
 
-            intent = result.get("intent", "general_query")
-            confidence = float(result.get("confidence", 0.5))
-            reasoning = result.get("reasoning", "")
-
-            # Validate intent is in our list
-            if intent not in INTENT_LIST:
-                intent = "general_query"
-                confidence = min(confidence, 0.5)
-
-            classification_result = {
-                "intent": intent,
-                "confidence": confidence,
-                "reasoning": reasoning
+            return {
+                "intent": result.get("intent", "general_query"),
+                "confidence": float(result.get("confidence", 0.5)),
+                "reasoning": result.get("reasoning", ""),
             }
-
-            # Track history
-            self._add_to_history(
-                message=message,
-                user_id=user_id,
-                result=classification_result
-            )
-
-            return classification_result
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse intent classification response: {e}")

@@ -7,7 +7,16 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
-        CREATE TYPE user_role AS ENUM ('employee', 'hr', 'admin');
+        CREATE TYPE user_role AS ENUM ('employee', 'manager', 'hr', 'admin');
+    ELSE
+        -- Ensure 'manager' exists in existing enum
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_enum
+            WHERE enumtypid = (SELECT oid FROM pg_type WHERE typname = 'user_role')
+            AND enumlabel = 'manager'
+        ) THEN
+            ALTER TYPE user_role ADD VALUE 'manager';
+        END IF;
     END IF;
 
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_status') THEN

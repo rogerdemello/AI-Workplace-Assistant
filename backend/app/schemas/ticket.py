@@ -72,6 +72,7 @@ class TicketMessageResponse(BaseModel):
     ticket_id: UUID
     sender_id: Optional[UUID] = None
     message_text: str
+    is_internal: bool = False
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
@@ -82,5 +83,16 @@ class TicketAssigneeResponse(BaseModel):
     name: str
     email: str
     role: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TicketActionLogResponse(BaseModel):
+    id: UUID
+    ticket_id: UUID
+    actor_id: Optional[UUID] = None
+    action_type: str
+    details: Optional[str] = None
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

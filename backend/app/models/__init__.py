@@ -25,6 +25,12 @@ from .wellness_tip import WellnessTip, WellnessTipType
 from .onboarding_checklist import OnboardingChecklist
 from .onboarding_buddy import OnboardingBuddy
 from .webhook import Webhook, WebhookDelivery, WebhookEventType, WebhookStatus, SlackIntegration
+from .ticket_action_log import TicketActionLog
+from .hr_notification import HrNotification
+from .automation_rule import AutomationRule
+from .sentiment_log import SentimentLog
+from .employee_score import EmployeeScore
+from .message_signal import MessageSignal
 
 __all__ = [
     "User", "UserRole", "UserStatus", "Department",
@@ -55,4 +61,15 @@ __all__ = [
     "WellnessTipType",
     "OnboardingChecklist",
     "OnboardingBuddy",
+    "TicketActionLog",
+    "HrNotification",
+    "AutomationRule",
+    "SentimentLog",
+    "EmployeeScore",
+    "MessageSignal",
+    "Webhook",
+    "WebhookDelivery",
+    "WebhookEventType",
+    "WebhookStatus",
+    "SlackIntegration",
 ]

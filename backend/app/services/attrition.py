@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from uuid import UUID
 from datetime import datetime, timedelta
 from enum import Enum
@@ -54,15 +54,23 @@ class AttritionRiskService:
         user_id: UUID,
         start_dt: Optional[datetime] = None,
         end_dt: Optional[datetime] = None,
-    ) -> Dict[str, float]:
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Compute normalized factor values in [0,1] for attrition scoring."""
         if not self.db:
-            return {
+            factors = {
                 "sentiment_trend": 0.5,
                 "ticket_sentiment": 0.5,
                 "engagement_score": 0.5,
                 "response_frequency": 0.5,
             }
+            diagnostics = {
+                "messages_30d": 0.0,
+                "conversations_30d": 0.0,
+                "open_tickets": 0.0,
+                "escalated_tickets": 0.0,
+                "silence_days": 30.0,
+            }
+            return factors, diagnostics
 
         start, end = self._window_boundaries(start_dt, end_dt)
 
@@ -145,12 +153,20 @@ class AttritionRiskService:
 
         ticket_sentiment = min(1.0, (open_tickets * 0.18) + (escalated_tickets * 0.35))
 
-        return {
+        factors = {
             "sentiment_trend": float(min(max(sentiment_trend, 0.0), 1.0)),
             "ticket_sentiment": float(min(max(ticket_sentiment, 0.0), 1.0)),
             "engagement_score": float(min(max(engagement_score, 0.0), 1.0)),
             "response_frequency": float(min(max(response_frequency, 0.0), 1.0)),
         }
+        diagnostics = {
+            "messages_30d": float(total_messages),
+            "conversations_30d": float(total_conversations),
+            "open_tickets": float(open_tickets),
+            "escalated_tickets": float(escalated_tickets),
+            "silence_days": float(max(0.0, (end - last_message_at).total_seconds() / 86400.0)) if last_message_at else 30.0,
+        }
+        return factors, diagnostics
     
     def _calculate_risk_level(self, risk_score: float) -> str:
         """Convert numeric risk score to risk level."""
@@ -170,18 +186,22 @@ class AttritionRiskService:
         Returns:
             Dict containing risk score, level, factors, and history
         """
-        factors = self._compute_window_factors(user_id=user_id)
+        factors, diagnostics = self._compute_window_factors(user_id=user_id)
         score = self.calculate_risk_from_data(
             sentiment_trend=factors["sentiment_trend"],
             ticket_sentiment=factors["ticket_sentiment"],
             engagement_score=factors["engagement_score"],
             response_frequency=factors["response_frequency"],
+            diagnostics=diagnostics,
         )
 
         return {
             "user_id": str(user_id),
             "risk_score": score["risk_score"],
+            "calibrated_risk_score": score["calibrated_risk_score"],
             "risk_level": score["risk_level"],
+            "confidence": score["confidence"],
+            "calibration_band": score["calibration_band"],
             "factors": score["factors"],
             "history": self.get_risk_history(user_id=user_id, months=3),
         }
@@ -191,7 +211,8 @@ class AttritionRiskService:
         sentiment_trend: float,
         ticket_sentiment: float,
         engagement_score: float,
-        response_frequency: float
+        response_frequency: float,
+        diagnostics: Optional[Dict[str, float]] = None,
     ) -> Dict:
         """
         Calculate risk score from individual factors.
@@ -205,6 +226,7 @@ class AttritionRiskService:
         Returns:
             Dict with calculated risk score and breakdown
         """
+        diagnostics = diagnostics or {}
         # Weight each factor
         weights = {
             "sentiment_trend": 0.35,
@@ -226,33 +248,84 @@ class AttritionRiskService:
         risk_score = min(max(risk_score, 0.0), 1.0)  # Clamp to 0-1
         
         risk_level = self._calculate_risk_level(risk_score)
+        calibrated_score, confidence = self._calibrate_risk_score(risk_score, diagnostics)
+
+        factor_meta = {
+            "sentiment_trend": {
+                "description": "Declining sentiment over 30 days",
+                "direction": "higher_increases_risk",
+                "raw_value": sentiment_trend,
+                "risk_value": sentiment_trend,
+            },
+            "ticket_sentiment": {
+                "description": "Open/escalated ticket pressure",
+                "direction": "higher_increases_risk",
+                "raw_value": ticket_sentiment,
+                "risk_value": ticket_sentiment,
+            },
+            "engagement_score": {
+                "description": "Low engagement in chat activity",
+                "direction": "lower_increases_risk",
+                "raw_value": engagement_score,
+                "risk_value": 1 - engagement_score,
+            },
+            "response_frequency": {
+                "description": "Reduced interaction frequency",
+                "direction": "lower_increases_risk",
+                "raw_value": response_frequency,
+                "risk_value": 1 - response_frequency,
+            },
+        }
+        total_contribution = sum(contributions.values()) or 1.0
+        factors = []
+        for name, contribution in contributions.items():
+            meta = factor_meta[name]
+            contribution_pct = (contribution / total_contribution) * 100.0
+            factors.append(
+                {
+                    "name": name,
+                    "description": meta["description"],
+                    "direction": meta["direction"],
+                    "raw_value": round(float(meta["raw_value"]), 3),
+                    "risk_value": round(float(meta["risk_value"]), 3),
+                    "weight": round(float(weights[name]), 3),
+                    "contribution": round(float(contribution), 3),
+                    "contribution_pct": round(float(contribution_pct), 1),
+                }
+            )
+        factors.sort(key=lambda item: item["contribution"], reverse=True)
         
         return {
             "risk_score": round(risk_score, 2),
+            "calibrated_risk_score": round(calibrated_score, 2),
             "risk_level": risk_level,
-            "factors": [
-                {
-                    "name": "sentiment_trend",
-                    "contribution": round(contributions["sentiment_trend"], 3),
-                    "description": "Declining sentiment over 30 days"
-                },
-                {
-                    "name": "ticket_sentiment",
-                    "contribution": round(contributions["ticket_sentiment"], 3),
-                    "description": "Negative sentiment in recent tickets"
-                },
-                {
-                    "name": "engagement_score",
-                    "contribution": round(contributions["engagement_score"], 3),
-                    "description": "Low engagement score"
-                },
-                {
-                    "name": "response_patterns",
-                    "contribution": round(contributions["response_frequency"], 3),
-                    "description": "Reduced interaction frequency"
-                }
-            ]
+            "confidence": round(confidence, 2),
+            "calibration_band": self._calibration_band_for_confidence(confidence),
+            "factors": factors,
         }
+
+    def _calibrate_risk_score(self, raw_score: float, diagnostics: Dict[str, float]) -> Tuple[float, float]:
+        messages = diagnostics.get("messages_30d", 0.0)
+        conversations = diagnostics.get("conversations_30d", 0.0)
+        open_tickets = diagnostics.get("open_tickets", 0.0)
+        escalated_tickets = diagnostics.get("escalated_tickets", 0.0)
+        silence_days = diagnostics.get("silence_days", 30.0)
+
+        evidence = min(1.0, (messages / 16.0) * 0.45 + (conversations / 6.0) * 0.20 + (open_tickets / 4.0) * 0.20 + (escalated_tickets / 2.0) * 0.15)
+        freshness = max(0.0, 1.0 - min(1.0, silence_days / 45.0))
+        confidence = max(0.15, min(0.98, (0.65 * evidence) + (0.35 * freshness)))
+
+        # Pull very sparse-signal scores toward neutral midpoint for stability.
+        calibrated = (raw_score * confidence) + (0.5 * (1.0 - confidence))
+        calibrated = min(max(calibrated, 0.0), 1.0)
+        return calibrated, confidence
+
+    def _calibration_band_for_confidence(self, confidence: float) -> str:
+        if confidence >= 0.75:
+            return "high_confidence"
+        if confidence >= 0.45:
+            return "medium_confidence"
+        return "low_confidence"
     
     def get_department_risk_summary(self, department_id: Optional[UUID] = None) -> Dict:
         """
@@ -287,7 +360,7 @@ class AttritionRiskService:
                 {
                     "user_id": str(user.id),
                     "name": user.name,
-                    "risk_score": float(risk["risk_score"]),
+                    "risk_score": float(risk["calibrated_risk_score"]),
                     "risk_level": risk["risk_level"],
                 }
             )
@@ -326,12 +399,13 @@ class AttritionRiskService:
             window_end = now - timedelta(days=30 * (months - i - 1))
             window_start = window_end - timedelta(days=30)
 
-            factors = self._compute_window_factors(user_id=user_id, start_dt=window_start, end_dt=window_end)
+            factors, diagnostics = self._compute_window_factors(user_id=user_id, start_dt=window_start, end_dt=window_end)
             score = self.calculate_risk_from_data(
                 sentiment_trend=factors["sentiment_trend"],
                 ticket_sentiment=factors["ticket_sentiment"],
                 engagement_score=factors["engagement_score"],
                 response_frequency=factors["response_frequency"],
+                diagnostics=diagnostics,
             )
 
             history.append(

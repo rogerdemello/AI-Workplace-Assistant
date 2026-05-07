@@ -185,3 +185,105 @@ def test_delete_calendar_event_returns_404_when_missing(client, auth_headers, db
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
     assert "not found" in response.json()["detail"].lower()
+
+
+def test_list_integration_providers_includes_stub_connectors(client, auth_headers):
+    response = client.get("/api/v1/integrations/providers", headers=auth_headers)
+    assert response.status_code == status.HTTP_200_OK
+    rows = response.json()
+    keys = {row["key"] for row in rows}
+    assert "google_calendar" in keys
+    assert "microsoft_calendar" in keys
+    assert "workday_hrms" in keys
+    assert "adp_payroll" in keys
+
+
+def test_hrms_sync_stub_runs_with_supported_provider(client, auth_headers):
+    response = client.post(
+        "/api/v1/integrations/hrms/sync",
+        headers=auth_headers,
+        json={"provider": "workday_hrms", "dry_run": True},
+    )
+    assert response.status_code == status.HTTP_200_OK
+    payload = response.json()
+    assert payload["category"] == "hrms"
+    assert payload["dry_run"] is True
+    assert payload["records_seen"] >= 1
+
+
+def test_payroll_sync_stub_rejects_unknown_provider(client, auth_headers):
+    response = client.post(
+        "/api/v1/integrations/payroll/sync",
+        headers=auth_headers,
+        json={"provider": "unknown_payroll", "dry_run": True},
+    )
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "unsupported payroll provider" in response.json()["detail"].lower()
+
+
+def test_hrms_sync_uses_live_path_when_provider_credentials_present(client, auth_headers, monkeypatch):
+    from app.api.v1 import integrations as integrations_api
+
+    monkeypatch.setenv("WORKDAY_BASE_URL", "https://workday.example.com")
+    monkeypatch.setenv("WORKDAY_API_TOKEN", "token-123")
+
+    def fake_live_sync(provider: str, category: str, dry_run: bool):
+        assert provider == "workday_hrms"
+        assert category == "hrms"
+        assert dry_run is False
+        return integrations_api.IntegrationSyncResponse(
+            provider=provider,
+            category=category,
+            status="ok",
+            dry_run=False,
+            records_seen=15,
+            records_changed=8,
+            details="Live HRMS sync executed.",
+        )
+
+    monkeypatch.setattr(integrations_api, "_run_live_sync", fake_live_sync)
+
+    response = client.post(
+        "/api/v1/integrations/hrms/sync",
+        headers=auth_headers,
+        json={"provider": "workday_hrms", "dry_run": False},
+    )
+    assert response.status_code == status.HTTP_200_OK
+    payload = response.json()
+    assert payload["category"] == "hrms"
+    assert payload["records_seen"] == 15
+    assert payload["records_changed"] == 8
+
+
+def test_payroll_sync_uses_live_path_when_provider_credentials_present(client, auth_headers, monkeypatch):
+    from app.api.v1 import integrations as integrations_api
+
+    monkeypatch.setenv("ADP_BASE_URL", "https://adp.example.com")
+    monkeypatch.setenv("ADP_API_TOKEN", "token-123")
+
+    def fake_live_sync(provider: str, category: str, dry_run: bool):
+        assert provider == "adp_payroll"
+        assert category == "payroll"
+        assert dry_run is False
+        return integrations_api.IntegrationSyncResponse(
+            provider=provider,
+            category=category,
+            status="ok",
+            dry_run=False,
+            records_seen=9,
+            records_changed=5,
+            details="Live payroll sync executed.",
+        )
+
+    monkeypatch.setattr(integrations_api, "_run_live_sync", fake_live_sync)
+
+    response = client.post(
+        "/api/v1/integrations/payroll/sync",
+        headers=auth_headers,
+        json={"provider": "adp_payroll", "dry_run": False},
+    )
+    assert response.status_code == status.HTTP_200_OK
+    payload = response.json()
+    assert payload["category"] == "payroll"
+    assert payload["records_seen"] == 9
+    assert payload["records_changed"] == 5

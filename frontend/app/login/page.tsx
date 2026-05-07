@@ -11,7 +11,7 @@ import { Spinner } from '@/components/ui/spinner';
 export default function LoginPage() {
   const router = useRouter();
   const { loading: authLoading, login } = useAuth();
-  const [email, setEmail] = useState('employee@mark.ai');
+  const [email, setEmail] = useState('employee1@infeedo.ai');
   const [password, setPassword] = useState('password123');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

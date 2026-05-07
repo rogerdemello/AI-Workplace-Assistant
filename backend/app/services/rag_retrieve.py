@@ -143,6 +143,7 @@ class RAGRetrieveService:
                     "chunk_id": str(chunk.id),
                     "document_id": str(chunk.document_id),
                     "document_title": chunk.document.title,
+                    "document_updated_at": chunk.document.updated_at,
                     "content": chunk.content,
                     "chunk_index": chunk.chunk_index,
                     "score": round(similarity, 4),

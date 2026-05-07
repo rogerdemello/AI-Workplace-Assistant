@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* MARK Design System — chat-first HR OS
+   Calm, intelligent, premium. Deep ink + soft surfaces + teal accents.
+   All colors HSL.
+*/
+
+@layer base {
+  :root {
+    /* Light surfaces — warm neutrals */
+    --background: 40 30% 98%;
+    --foreground: 220 30% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 30% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 30% 12%;
+
+    /* Ink primary */
+    --primary: 220 40% 14%;
+    --primary-foreground: 40 30% 98%;
+
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 220 30% 18%;
+
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 12% 44%;
+
+    /* Teal accent */
+    --accent: 170 70% 42%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 170 60% 94%;
+    --accent-glow: 170 80% 55%;
+
+    /* Emerald support */
+    --emerald: 160 70% 38%;
+    --emerald-soft: 160 60% 94%;
+
+    /* Status */
+    --success: 160 70% 38%;
+    --warning: 35 95% 55%;
+    --warning-soft: 35 95% 95%;
+    --danger: 0 75% 58%;
+    --danger-soft: 0 75% 96%;
+
+    --destructive: 0 75% 58%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 14% 90%;
+    --input: 220 14% 90%;
+    --ring: 170 70% 42%;
+
+    --radius: 1rem;
+
+    /* Gradients */
+    --gradient-ink: linear-gradient(135deg, hsl(220 40% 14%) 0%, hsl(215 35% 22%) 100%);
+    --gradient-teal: linear-gradient(135deg, hsl(170 70% 42%) 0%, hsl(180 75% 50%) 100%);
+    --gradient-glow: radial-gradient(circle at 30% 20%, hsl(170 80% 55% / 0.18), transparent 60%);
+    --gradient-aurora: linear-gradient(135deg, hsl(170 70% 42% / 0.12), hsl(220 60% 30% / 0.08) 50%, hsl(280 50% 50% / 0.06));
+
+    /* Shadows */
+    --shadow-soft: 0 1px 2px hsl(220 30% 12% / 0.04), 0 4px 16px hsl(220 30% 12% / 0.04);
+    --shadow-elevated: 0 4px 12px hsl(220 30% 12% / 0.06), 0 24px 48px -12px hsl(220 30% 12% / 0.12);
+    --shadow-glow: 0 0 0 1px hsl(170 70% 42% / 0.2), 0 12px 32px -8px hsl(170 70% 42% / 0.35);
+    --shadow-chat: 0 24px 64px -16px hsl(220 40% 14% / 0.25), 0 0 0 1px hsl(220 14% 90%);
+
+    /* Sidebar */
+    --sidebar-background: 220 40% 11%;
+    --sidebar-foreground: 220 14% 78%;
+    --sidebar-primary: 170 70% 42%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 35% 16%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 220 30% 18%;
+    --sidebar-ring: 170 70% 42%;
+  }
+
+  .dark {
+    --background: 220 30% 8%;
+    --foreground: 40 20% 96%;
+
+    --card: 220 30% 11%;
+    --card-foreground: 40 20% 96%;
+
+    --popover: 220 30% 11%;
+    --popover-foreground: 40 20% 96%;
+
+    --primary: 170 70% 50%;
+    --primary-foreground: 220 40% 10%;
+
+    --secondary: 220 25% 16%;
+    --secondary-foreground: 40 20% 96%;
+
+    --muted: 220 25% 16%;
+    --muted-foreground: 220 12% 60%;
+
+    --accent: 170 70% 50%;
+    --accent-foreground: 220 40% 10%;
+    --accent-soft: 170 50% 18%;
+
+    --border: 220 25% 18%;
+    --input: 220 25% 18%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html, body, #root {
+    @apply h-full;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection {
+    background: hsl(var(--accent) / 0.25);
+  }
+}
+
+@layer utilities {
+  .bg-ink { background: var(--gradient-ink); }
+  .bg-teal-grad { background: var(--gradient-teal); }
+  .bg-aurora { background: var(--gradient-aurora); }
+  .shadow-soft { box-shadow: var(--shadow-soft); }
+  .shadow-elevated { box-shadow: var(--shadow-elevated); }
+  .shadow-glow { box-shadow: var(--shadow-glow); }
+  .shadow-chat { box-shadow: var(--shadow-chat); }
+  .glass {
+    background: hsl(var(--card) / 0.7);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+  }
+  .glass-dark {
+    background: hsl(220 40% 11% / 0.7);
+    backdrop-filter: blur(16px) saturate(180%);
+  }
+  .text-balance { text-wrap: balance; }
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+}

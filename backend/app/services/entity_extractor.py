@@ -3,13 +3,105 @@ Entity extraction service for slot filling in conversation flows.
 Extracts structured data (department, issue, severity, etc.) from user messages.
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 import json
 import logging
+import re
 
+from ..config import settings
 from ..ai_client import get_ai_client, AzureOpenAIClient, MockAzureOpenAIClient
+from .chat.state_machine import first_missing_leave_slot, infer_leave_patch_from_text
 
 logger = logging.getLogger(__name__)
+
+
+def _fast_chat_enabled() -> bool:
+    return bool(settings.FAST_CHAT_MODE)
+
+
+_ISO_DATE = re.compile(
+    r"\b(20[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]))\b"
+)
+
+
+def _parse_iso_date_str(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or s.lower() == "unspecified":
+            return None
+        if _ISO_DATE.fullmatch(s):
+            return s
+        if _ISO_DATE.search(s):
+            return _ISO_DATE.search(s).group(1)
+    return None
+
+
+def _has_date_slot(current_data: Optional[Dict[str, Any]], key: str) -> bool:
+    return _parse_iso_date_str((current_data or {}).get(key)) is not None
+
+
+def _heuristic_leave_entities(
+    message: str,
+    current_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Optional[str]]:
+    """Rule-based extraction — avoids an Azure round-trip per leave-flow turn when FAST_CHAT_MODE is on."""
+    out: Dict[str, Optional[str]] = {
+        "leave_type": None,
+        "start_date": None,
+        "end_date": None,
+        "reason": None,
+    }
+    text = (message or "").strip()
+    if not text:
+        return out
+
+    cd = current_data or {}
+
+    # Deterministic date routing (first missing start → then end)
+    for key, val in infer_leave_patch_from_text(text, cd).items():
+        if val:
+            out[key] = val
+
+    dates = _ISO_DATE.findall(text)
+    if len(dates) >= 2 and out.get("start_date") is None:
+        out["start_date"], out["end_date"] = dates[0], dates[1]
+    elif len(dates) == 1 and out.get("start_date") is None and out.get("end_date") is None:
+        d0 = dates[0]
+        has_start = _has_date_slot(cd, "start_date")
+        has_end = _has_date_slot(cd, "end_date")
+        if not has_start:
+            out["start_date"] = d0
+        elif not has_end:
+            out["end_date"] = d0
+        else:
+            out["end_date"] = d0
+
+    low = text.lower()
+    if re.search(r"\b(sick|ill|medical)\b", low):
+        out["leave_type"] = "sick"
+    elif re.search(r"\b(wfh|work from home|working from home|remote)\b", low):
+        out["leave_type"] = "work from home"
+    elif re.search(r"\b(unpaid|personal|bereavement|parental)\b", low):
+        out["leave_type"] = "personal"
+    elif re.search(r"\b(paid|pto|annual|vacation|holiday|time off)\b", low):
+        out["leave_type"] = "vacation"
+
+    looks_like_date_only = len(dates) == 1 and bool(re.fullmatch(r"\s*" + re.escape(dates[0]) + r"\s*", text))
+    next_slot = first_missing_leave_slot({**cd, **{k: v for k, v in out.items() if v}})
+    if (
+        next_slot == "reason"
+        and out["start_date"] is None
+        and out["end_date"] is None
+        and out["leave_type"] is None
+        and len(text) > 12
+        and not looks_like_date_only
+        and not re.match(r"^(yes|no|yeah|yep|ok|okay|sure)\b", low)
+    ):
+        out["reason"] = text.strip()
+
+    return out
 
 
 class EntityExtractor:
@@ -83,13 +175,22 @@ Return ONLY the JSON, no other text."""
                 "details": None
             }
     
-    def extract_leave_entities(self, message: str) -> Dict[str, Optional[str]]:
+    def extract_leave_entities(
+        self,
+        message: str,
+        current_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Optional[str]]:
         """
         Extract leave request entities from user message.
         
         Returns:
             Dict with keys: leave_type, start_date, end_date, reason
         """
+        if _fast_chat_enabled():
+            quick = _heuristic_leave_entities(message, current_data)
+            if any(v is not None for v in quick.values()):
+                return quick
+
         prompt = f"""Extract leave request information from this message.
 
 Message: "{message}"

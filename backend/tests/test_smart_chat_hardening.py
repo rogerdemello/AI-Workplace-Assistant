@@ -42,7 +42,7 @@ def test_reminder_intent_routes_to_reminder_handler(db, test_user, monkeypatch):
     assert result["response"] == "Reminder created"
 
 
-def test_ticket_flow_collects_severity_against_department_then_anonymous(db, test_user, monkeypatch):
+def test_ticket_flow_collects_issue_against_anonymous_then_confirm(db, test_user, monkeypatch):
     service = SmartChatService(db=db, user_id=test_user.id, use_mock=True)
 
     def extract_ticket_entities(message: str):
@@ -62,16 +62,17 @@ def test_ticket_flow_collects_severity_against_department_then_anonymous(db, tes
     monkeypatch.setattr(service.sentiment_service, "analyze", lambda *_args, **_kwargs: {"sentiment": "neutral"})
 
     first = service.process_message("There is unfair treatment in my team")["response"]
-    second = service.process_message("urgent")["response"]
-    third = service.process_message("It is against Sam")["response"]
-    fourth = service.process_message("HR")["response"]
+    second = service.process_message("It is against Sam")["response"]
+    third = service.process_message("no")["response"]
 
-    assert "mild, serious, or urgent" in first
-    assert "who is this against" in second.lower()
-    assert "which department should handle this" in third.lower()
-    assert "stay anonymous" in fourth.lower()
-    assert service.flow_context["ticket_data"]["severity"] == "urgent"
-    assert service.flow_context["ticket_data"]["issue"] == "There is unfair treatment in my team"
+    # Issue is extracted on turn 1 — next question is against (not a severity picker).
+    assert "mild, serious, or urgent" not in first.lower()
+    assert "person" in first.lower() or "specific" in first.lower()
+    assert "anonymous" in second.lower()
+    assert "hr" in third.lower() or "send" in third.lower() or "confidential" in third.lower()
+    assert service.flow_context["ticket_data"].get("issue") == "There is unfair treatment in my team"
+    assert service.flow_context["ticket_data"].get("against") == "Sam"
+    assert service.flow_context["ticket_data"].get("anonymous") is False
     assert service.flow_context["ticket_data"]["category"] == "complaint"
 
 
@@ -79,7 +80,7 @@ def test_duplicate_ticket_is_not_created_within_24_hours(db, test_user):
     import hashlib
     # Compute the exact query text and hash that _complete_ticket will produce
     query_text = (
-        "wrong salary deduction for april payroll issue\n"
+        "serious wrong salary deduction for april payroll issue\n"
         "Severity: serious\n"
         "Against: Payroll Team\n"
         "Details: Amounts do not match expected payout."
@@ -99,8 +100,7 @@ def test_duplicate_ticket_is_not_created_within_24_hours(db, test_user):
 
     service = SmartChatService(db=db, user_id=test_user.id, use_mock=True)
     ticket_data = {
-        "issue": "wrong salary deduction for april payroll issue",
-        "severity": "serious",
+        "issue": "serious wrong salary deduction for april payroll issue",
         "department": "Finance",
         "against": "Payroll Team",
         "details": "Amounts do not match expected payout.",
@@ -110,7 +110,7 @@ def test_duplicate_ticket_is_not_created_within_24_hours(db, test_user):
     response = service._complete_ticket(ticket_data)
     total_tickets = db.query(Ticket).filter(Ticket.user_id == test_user.id).count()
 
-    assert "already have a ticket for this" in response.lower()
+    assert "already have" in response.lower() and "similar" in response.lower()
     assert total_tickets == 1
 
 
@@ -163,3 +163,37 @@ def test_escalate_ticket_intent_sets_priority_to_critical(db, test_user):
     assert ticket.priority == TicketPriority.critical
     assert ticket.status == TicketStatus.escalated
     assert "escalated" in result["response"].lower()
+
+
+def test_strong_intent_switch_acknowledges_context_switch(db, test_user):
+    service = SmartChatService(db=db, user_id=test_user.id, use_mock=True)
+
+    first = service.process_message("Apply leave")
+    assert first["intent"] == "leave_request"
+    assert service.current_flow == "leave_request"
+
+    second = service.process_message("Raise complaint")
+    assert second["intent"] == "ticket_create"
+    assert "switching gears from leave request to ticket create" in second["response"].lower()
+
+
+def test_help_request_for_timesheet_is_specific(db, test_user):
+    service = SmartChatService(db=db, user_id=test_user.id, use_mock=True)
+
+    result = service.process_message("Help me with my timesheet")
+
+    assert result["intent"] == "help_request"
+    assert "timesheet" in result["response"].lower()
+    assert "missing hours" in result["response"].lower()
+
+
+def test_negative_without_distress_does_not_force_eap(db, test_user, monkeypatch):
+    service = SmartChatService(db=db, user_id=test_user.id, use_mock=True)
+    monkeypatch.setattr(service, "_detect_strong_intent", lambda _msg: None)
+    monkeypatch.setattr(service.intent_classifier, "classify", lambda *_args, **_kwargs: {"intent": "general_query"})
+    monkeypatch.setattr(service.sentiment_service, "analyze", lambda *_args, **_kwargs: {"sentiment": "negative"})
+    monkeypatch.setattr(service, "_handle_general_query", lambda *_args, **_kwargs: "That sounds frustrating. Want me to draft a note?")
+
+    result = service.process_message("This process is frustrating")
+
+    assert "eap hotline" not in result["response"].lower()

@@ -99,3 +99,102 @@ def test_activity_events_can_trigger_break_nudge(client, auth_headers, mock_redi
 
     assert last is not None
     assert "nudge" in last
+
+
+def test_hr_can_update_proactive_suppression_policy(client, hr_auth_headers, auth_headers):
+    denied = client.get("/api/v1/wellbeing/policy-suppression", headers=auth_headers)
+    assert denied.status_code == status.HTTP_403_FORBIDDEN
+
+    current = client.get("/api/v1/wellbeing/policy-suppression", headers=hr_auth_headers)
+    assert current.status_code == status.HTTP_200_OK
+    assert "global_daily_max" in current.json()
+
+    updated = client.patch(
+        "/api/v1/wellbeing/policy-suppression",
+        headers=hr_auth_headers,
+        json={
+            "enabled": True,
+            "global_daily_max": 1,
+            "break_nudge_cooldown_minutes": 999,
+            "break_nudge_daily_max": 1,
+        },
+    )
+    assert updated.status_code == status.HTTP_200_OK
+    payload = updated.json()
+    assert payload["global_daily_max"] == 1
+    assert payload["break_nudge_daily_max"] == 1
+
+
+def test_break_nudge_is_suppressed_after_policy_limit(client, auth_headers, hr_auth_headers, mock_redis):
+    policy = client.patch(
+        "/api/v1/wellbeing/policy-suppression",
+        headers=hr_auth_headers,
+        json={
+            "enabled": True,
+            "global_daily_max": 1,
+            "break_nudge_cooldown_minutes": 999,
+            "break_nudge_daily_max": 1,
+        },
+    )
+    assert policy.status_code == status.HTTP_200_OK
+
+    first = None
+    for _ in range(6):
+        resp = client.post(
+            "/api/v1/wellbeing/activity",
+            headers=auth_headers,
+            json={"event_type": "chat_message", "event_source": "web"},
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        first = resp.json()
+    assert first is not None
+    assert first.get("nudge")
+
+    second = None
+    for _ in range(6):
+        resp = client.post(
+            "/api/v1/wellbeing/activity",
+            headers=auth_headers,
+            json={"event_type": "chat_message", "event_source": "web"},
+        )
+        assert resp.status_code == status.HTTP_200_OK
+        second = resp.json()
+    assert second is not None
+    assert second.get("nudge") is None
+
+
+def test_reminder_created_event_rule_creates_hr_notification(client, auth_headers, hr_auth_headers, mock_redis):
+    create_rule = client.post(
+        "/api/v1/automations/rules",
+        headers=hr_auth_headers,
+        json={
+            "name": "Notify on reminder created",
+            "event_type": "reminder_created",
+            "conditions": {},
+            "actions": {
+                "create_hr_notification": True,
+                "notification_title": "Reminder created automation",
+                "notification_type": "reminder_created_workflow",
+            },
+        },
+    )
+    assert create_rule.status_code == status.HTTP_200_OK
+
+    run_at = (utcnow_naive() + timedelta(hours=2)).isoformat()
+    response = client.post(
+        "/api/v1/wellbeing/reminders",
+        headers=auth_headers,
+        json={
+            "reminder_type": "hydration",
+            "title": "Hydration reminder",
+            "message": "Drink water",
+            "schedule_kind": "one_time",
+            "run_at": run_at,
+        },
+    )
+    assert response.status_code == status.HTTP_201_CREATED
+
+    notifications = client.get("/api/v1/portal/hr/notifications", headers=hr_auth_headers)
+    assert notifications.status_code == status.HTTP_200_OK
+    rows = notifications.json()
+    assert any(row.get("notification_type") == "reminder_created_workflow" for row in rows)

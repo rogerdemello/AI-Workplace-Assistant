@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict
 from typing import List, Optional, Dict, Any
@@ -6,7 +7,7 @@ from uuid import UUID
 
 from ...database import get_db
 from ...auth import get_current_user
-from ...models.user import User
+from ...models.user import User, UserRole, UserStatus
 from ...models.survey import Survey, SurveyResponse
 
 router = APIRouter(prefix="/surveys", tags=["surveys"])
@@ -128,6 +129,68 @@ def list_all_surveys(
     
     surveys = db.query(Survey).order_by(Survey.created_at.desc()).all()
     return surveys
+
+
+class SurveyHrSummaryItem(BaseModel):
+    id: str
+    title: str
+    audience: str
+    responses: int
+    invited: int
+    sentiment: str
+    status: str
+    closed_at: Optional[str] = None
+
+
+@router.get("/hr-summary", response_model=List[SurveyHrSummaryItem])
+def hr_survey_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """HR dashboard: surveys with response counts vs active employee headcount."""
+    if current_user.role not in [UserRole.admin, UserRole.hr]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only HR or admin can view survey summary",
+        )
+
+    invited = (
+        db.query(func.count(User.id))
+        .filter(User.role == UserRole.employee, User.status == UserStatus.active)
+        .scalar()
+        or 0
+    )
+    invited = max(int(invited), 1)
+
+    surveys = db.query(Survey).order_by(Survey.created_at.desc()).all()
+    out: List[SurveyHrSummaryItem] = []
+    for s in surveys:
+        rc = (
+            db.query(func.count(SurveyResponse.id)).filter(SurveyResponse.survey_id == s.id).scalar() or 0
+        )
+        pct = int(round((rc / invited) * 100)) if invited else 0
+        if pct >= 70:
+            sentiment = "positive"
+        elif pct >= 40:
+            sentiment = "neutral"
+        elif pct > 0:
+            sentiment = "watch"
+        else:
+            sentiment = "at_risk"
+        st = "live" if s.is_active else "closed"
+        out.append(
+            SurveyHrSummaryItem(
+                id=str(s.id),
+                title=s.title,
+                audience="All employees",
+                responses=int(rc),
+                invited=int(invited),
+                sentiment=sentiment,
+                status=st,
+                closed_at=None if s.is_active else (s.created_at.isoformat() if s.created_at else None),
+            )
+        )
+    return out
 
 
 @router.get("/{survey_id}", response_model=SurveyResponseModel)

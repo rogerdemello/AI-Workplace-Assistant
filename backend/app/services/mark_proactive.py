@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..models.activity_event import ActivityEvent
 from ..core.time import utcnow_naive
 from ..models.automation_action import AutomationAction
+from ..models.automation_rule import AutomationRule
 from ..models.conversation import Conversation, Message, MessageSender
 from ..models.hr_alert import HrAlert
 from ..models.reminder_schedule import ReminderSchedule
@@ -22,6 +23,17 @@ from .sentiment import SentimentService
 
 
 class MarkProactiveService:
+    DEFAULT_SUPPRESSION_POLICY: Dict[str, Any] = {
+        "enabled": True,
+        "global_daily_max": 8,
+        "break_nudge_cooldown_minutes": 60,
+        "break_nudge_daily_max": 2,
+        "scheduled_reminder_cooldown_minutes": 20,
+        "scheduled_reminder_daily_max": 10,
+        "daily_checkin_followup_cooldown_minutes": 240,
+        "daily_checkin_followup_daily_max": 1,
+    }
+
     STRESS_KEYWORDS = [
         "stressed",
         "overwhelmed",
@@ -55,6 +67,115 @@ class MarkProactiveService:
     def __init__(self, db: Session):
         self.db = db
         self.sentiment = SentimentService(db=db)
+
+    def get_suppression_policy(self) -> Dict[str, Any]:
+        row = (
+            self.db.query(AutomationRule)
+            .filter(
+                AutomationRule.event_type == "proactive_policy_config",
+                AutomationRule.name == "default_suppression_policy",
+            )
+            .first()
+        )
+        if not row:
+            return dict(self.DEFAULT_SUPPRESSION_POLICY)
+        payload = row.actions or {}
+        merged = dict(self.DEFAULT_SUPPRESSION_POLICY)
+        merged.update(payload)
+        return merged
+
+    def update_suppression_policy(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        current = self.get_suppression_policy()
+        current.update({k: v for k, v in updates.items() if v is not None})
+        row = (
+            self.db.query(AutomationRule)
+            .filter(
+                AutomationRule.event_type == "proactive_policy_config",
+                AutomationRule.name == "default_suppression_policy",
+            )
+            .first()
+        )
+        if not row:
+            row = AutomationRule(
+                name="default_suppression_policy",
+                event_type="proactive_policy_config",
+                enabled=True,
+                conditions={},
+                actions=current,
+                created_by=None,
+            )
+            self.db.add(row)
+        else:
+            row.actions = current
+        self.db.commit()
+        return current
+
+    def _is_suppressed(
+        self,
+        *,
+        user_id: UUID,
+        action_type: str,
+        rule_name: str,
+        now: datetime,
+    ) -> bool:
+        policy = self.get_suppression_policy()
+        if not bool(policy.get("enabled", True)):
+            return False
+
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        global_max = int(policy.get("global_daily_max", 8))
+        global_count = (
+            self.db.query(func.count(AutomationAction.id))
+            .filter(
+                AutomationAction.user_id == user_id,
+                AutomationAction.created_at >= today_start,
+                AutomationAction.action_type.in_(["nudge", "reminder", "followup_offer"]),
+            )
+            .scalar()
+            or 0
+        )
+        if global_count >= global_max:
+            return True
+
+        key_prefix = (
+            "break_nudge"
+            if rule_name == "break_reminder"
+            else "scheduled_reminder"
+            if rule_name == "scheduled_reminder"
+            else "daily_checkin_followup"
+            if rule_name == "daily_checkin_followup"
+            else ""
+        )
+        if not key_prefix:
+            return False
+
+        daily_max = int(policy.get(f"{key_prefix}_daily_max", 999))
+        event_count = (
+            self.db.query(func.count(AutomationAction.id))
+            .filter(
+                AutomationAction.user_id == user_id,
+                AutomationAction.rule_name == rule_name,
+                AutomationAction.created_at >= today_start,
+            )
+            .scalar()
+            or 0
+        )
+        if event_count >= daily_max:
+            return True
+
+        cooldown_minutes = int(policy.get(f"{key_prefix}_cooldown_minutes", 0))
+        if cooldown_minutes <= 0:
+            return False
+        recent = (
+            self.db.query(AutomationAction)
+            .filter(
+                AutomationAction.user_id == user_id,
+                AutomationAction.rule_name == rule_name,
+                AutomationAction.created_at >= now - timedelta(minutes=cooldown_minutes),
+            )
+            .first()
+        )
+        return recent is not None
 
     @staticmethod
     def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
@@ -349,6 +470,19 @@ class MarkProactiveService:
                     .first()
                 )
                 if not dedupe:
+                    if self._is_suppressed(
+                        user_id=user_id,
+                        action_type="nudge",
+                        rule_name="break_reminder",
+                        now=now,
+                    ):
+                        self.db.commit()
+                        return {
+                            "event_id": str(event.id),
+                            "event_type": event.event_type,
+                            "event_at": event.event_at.isoformat() if event.event_at else now.isoformat(),
+                            "nudge": None,
+                        }
                     nudge_message = "Hey, you've been active for a while. A quick break might help."
                     self.db.add(
                         AutomationAction(
@@ -513,18 +647,25 @@ class MarkProactiveService:
         suggestion = "Thanks for checking in. I am here anytime you need support."
         if signal["triage_level"] == "high" or wants_followup:
             suggestion = "Thanks for sharing. I can nudge HR for a supportive check-in if you want."
-            self.db.add(
-                AutomationAction(
-                    rule_name="daily_checkin_followup",
-                    user_id=user_id,
-                    target_type="user",
-                    action_type="followup_offer",
-                    status="sent",
-                    executed_at=utcnow_naive(),
-                    trigger_context={"triage_level": signal["triage_level"], "mood": mood},
+            now = utcnow_naive()
+            if not self._is_suppressed(
+                user_id=user_id,
+                action_type="followup_offer",
+                rule_name="daily_checkin_followup",
+                now=now,
+            ):
+                self.db.add(
+                    AutomationAction(
+                        rule_name="daily_checkin_followup",
+                        user_id=user_id,
+                        target_type="user",
+                        action_type="followup_offer",
+                        status="sent",
+                        executed_at=now,
+                        trigger_context={"triage_level": signal["triage_level"], "mood": mood},
+                    )
                 )
-            )
-            self.db.commit()
+                self.db.commit()
 
         return {
             "mood": mood,
@@ -682,6 +823,14 @@ class MarkProactiveService:
         processed = 0
         sent = 0
         for row in due_rows:
+            if self._is_suppressed(
+                user_id=row.user_id,
+                action_type="reminder",
+                rule_name="scheduled_reminder",
+                now=now,
+            ):
+                row.next_trigger_at = now + timedelta(minutes=30)
+                continue
             processed += 1
             self.db.add(
                 AutomationAction(

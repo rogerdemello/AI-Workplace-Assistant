@@ -26,6 +26,8 @@ This project provides a friendly, human-like interface for employees to complete
 - [Jira Import Guide](docs/Jira-Import-Guide.md)
 - [Sprint Execution Plan and Estimates](docs/Sprint-Execution-Plan-Estimates.md)
 - [OpenAPI Skeleton](docs/openapi.yaml)
+- [API Contracts](docs/API_CONTRACTS.md)
+- [Staging sign-off — sentiment & HR analytics](docs/STAGING_SIGNOFF_SENTIMENT.md)
 - [Architecture Diagrams (Mermaid)](docs/Architecture-Diagrams.md)
 
 ## Data Layer
@@ -44,3 +46,40 @@ Phase 1 prioritizes:
 - Data: PostgreSQL + Vector DB + Redis
 - Frontend: React web app + Slack/Teams bot integration
 - Deployment: Docker + Kubernetes (AWS or Azure)
+
+## Local Development
+- Primary frontend: `new-frontend`
+- Legacy frontend (kept for reference): `frontend`
+
+### Seeded accounts (FastAPI)
+Run from `backend`: `python -m scripts.seed_dummy_users`
+
+| Role      | Email                  | Password     |
+|-----------|-------------------------|--------------|
+| HR        | `hr1@infeedo.ai`        | `password123` |
+| Manager   | `manager1@infeedo.ai`   | `password123` |
+| Employee  | `employee1@infeedo.ai`  | `password123` |
+
+`employee1` is linked to **`manager1`** as direct manager and to a **`General`** department so manager dashboards have data after seed.
+
+### End-to-end smoke (optional)
+With API running (`uvicorn`) and DB seeded:
+
+```bash
+cd backend
+python -m scripts.smoke_e2e
+```
+
+Override base URL if needed: `SMOKE_API_URL=http://localhost:8000 python -m scripts.smoke_e2e`
+
+Use **real** `AZURE_OPENAI_*` values in `.env` for LLM-backed chat and hybrid sentiment (not mock keys).
+
+Run the app with Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+This starts:
+- Backend API on `http://localhost:8000`
+- Primary frontend (`new-frontend`) on `http://localhost:8080`

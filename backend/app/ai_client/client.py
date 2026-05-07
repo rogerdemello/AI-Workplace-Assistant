@@ -1,11 +1,12 @@
 import os
 import logging
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Iterator
 from openai import AzureOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 logger = logging.getLogger(__name__)
+RETRY_ATTEMPTS = max(1, int(os.getenv("AZURE_OPENAI_RETRY_ATTEMPTS", "1")))
 
 
 class AzureOpenAIClient:
@@ -32,7 +33,7 @@ class AzureOpenAIClient:
         )
 
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(RETRY_ATTEMPTS),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(Exception)
     )
@@ -81,3 +82,35 @@ class AzureOpenAIClient:
             input=text
         )
         return response.data[0].embedding
+
+    @retry(
+        stop=stop_after_attempt(RETRY_ATTEMPTS),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(Exception)
+    )
+    def chat_completion_stream(
+        self,
+        messages: List[ChatCompletionMessageParam],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs
+    ) -> Iterator[str]:
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.deployment,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                **kwargs
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                token = getattr(delta, "content", None)
+                if token:
+                    yield token
+        except Exception as e:
+            logger.error(f"Azure OpenAI streaming error: {str(e)}")
+            raise

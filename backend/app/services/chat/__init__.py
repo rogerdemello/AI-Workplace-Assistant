@@ -81,6 +81,33 @@ class ChatService:
 
         return message
 
+    def add_user_and_bot_message_pair(
+        self,
+        conversation_id: UUID,
+        *,
+        user_text: str,
+        user_sentiment: Optional[str],
+        bot_text: str,
+    ) -> tuple[Message, Message]:
+        """Persist employee + assistant turns in one transaction (faster than two commits)."""
+        user_row = Message(
+            conversation_id=conversation_id,
+            sender=ModelMessageSender.user,
+            message_text=user_text,
+            sentiment=user_sentiment,
+        )
+        bot_row = Message(
+            conversation_id=conversation_id,
+            sender=ModelMessageSender.bot,
+            message_text=bot_text,
+        )
+        self.db.add_all([user_row, bot_row])
+        self.db.commit()
+        self.db.refresh(user_row)
+        self.db.refresh(bot_row)
+        self._update_cache(conversation_id)
+        return user_row, bot_row
+
     def get_conversation_context(self, conversation_id: UUID, limit: int = 10) -> List[Message]:
         messages = (
             self.db.query(Message)
@@ -102,19 +129,23 @@ class ChatService:
         return conversation
 
     def _update_cache(self, conversation_id: UUID) -> None:
-        messages = self.get_conversation_context(conversation_id)
-        rc = get_redis_client()
-        if rc and messages:
-            cache_key = f"chat:conversation:{conversation_id}"
-            cached_data = [
-                {
-                    "sender": m.sender.value,
-                    "message_text": m.message_text,
-                    "created_at": m.created_at.isoformat(),
-                }
-                for m in messages
-            ]
-            rc.setex(cache_key, 3600, json.dumps(cached_data))
+        global _redis_client
+        try:
+            messages = self.get_conversation_context(conversation_id)
+            rc = get_redis_client()
+            if rc and messages:
+                cache_key = f"chat:conversation:{conversation_id}"
+                cached_data = [
+                    {
+                        "sender": m.sender.value,
+                        "message_text": m.message_text,
+                        "created_at": m.created_at.isoformat(),
+                    }
+                    for m in messages
+                ]
+                rc.setex(cache_key, 3600, json.dumps(cached_data))
+        except Exception:
+            _redis_client = None
 
 
 __all__ = ["ChatService", "get_redis_client"]

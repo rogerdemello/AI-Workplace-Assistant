@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { jwtFromClientPayload } from '@/lib/server-chat-jwt';
 
 function apiBaseUrl(): string {
   return (
@@ -23,25 +24,8 @@ interface BackendChatResponse {
   response?: string;
 }
 
-async function getJwt(payload: PolicyRequest): Promise<string | null> {
-  const trimmed = payload.authToken?.trim();
-  if (trimmed) return trimmed;
-  const base = apiBaseUrl();
-  const email = (payload.userEmail || 'demo@example.com').trim() || 'demo@example.com';
-  const name = (payload.userName || 'User').trim() || 'User';
-  try {
-    const res = await fetch(`${base}/api/v1/demo/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, name }),
-      cache: 'no-store',
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { access_token?: string };
-    return data.access_token ?? null;
-  } catch {
-    return null;
-  }
+function getJwt(payload: PolicyRequest): string | null {
+  return jwtFromClientPayload(payload.authToken);
 }
 
 async function fallbackPolicyViaChat(topic: string, token: string): Promise<string | null> {
@@ -97,7 +81,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'topic is required' }, { status: 400 });
   }
 
-  const token = await getJwt(payload);
+  const token = getJwt(payload);
   if (!token) {
     return NextResponse.json({ error: 'Unable to authenticate policy request' }, { status: 502 });
   }

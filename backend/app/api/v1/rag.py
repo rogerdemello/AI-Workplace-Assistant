@@ -9,7 +9,7 @@ import logging
 from ...database import get_db
 from ...core.feature_flags import get_feature_flags
 from ...schemas.rag import DocumentUploadResponse, DocumentListResponse, DocumentDetailResponse
-from ...auth import get_current_user
+from ...auth import get_current_user, require_roles
 from ...models.user import User
 from ...models.document import Document
 from ...services.rag_ingest import RAGIngestService
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 async def upload_document(
     file: UploadFile = File(...),
     title: str = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["hr", "admin"])),
     db: Session = Depends(get_db)
 ):
     if not title:
@@ -67,7 +67,7 @@ async def upload_document(
 
 @router.get("/documents", response_model=List[DocumentListResponse])
 def list_documents(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["hr", "admin"])),
     db: Session = Depends(get_db)
 ):
     documents = db.query(Document).filter(Document.is_active == True).all()
@@ -86,7 +86,7 @@ def list_documents(
 @router.get("/documents/{document_id}", response_model=DocumentDetailResponse)
 def get_document(
     document_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(["hr", "admin"])),
     db: Session = Depends(get_db)
 ):
     document = db.query(Document).filter(Document.id == document_id).first()
@@ -104,6 +104,45 @@ def get_document(
         created_at=document.created_at,
         chunks_count=len(document.chunks)
     )
+
+
+@router.patch("/documents/{document_id}/active", response_model=DocumentDetailResponse)
+def set_document_active_state(
+    document_id: UUID,
+    is_active: bool = Query(..., description="Enable/disable this document for retrieval"),
+    current_user: User = Depends(require_roles(["hr", "admin"])),
+    db: Session = Depends(get_db),
+):
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    document.is_active = is_active
+    db.commit()
+    db.refresh(document)
+    return DocumentDetailResponse(
+        id=document.id,
+        title=document.title,
+        file_path=document.file_path,
+        is_active=document.is_active,
+        created_at=document.created_at,
+        chunks_count=len(document.chunks),
+    )
+
+
+@router.delete("/documents/{document_id}")
+def delete_document(
+    document_id: UUID,
+    current_user: User = Depends(require_roles(["hr", "admin"])),
+    db: Session = Depends(get_db),
+):
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    db.delete(document)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/search")

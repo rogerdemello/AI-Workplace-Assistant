@@ -5,12 +5,16 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 import logging
+from datetime import datetime, timedelta
 
 from ...ai_client import get_ai_client
 from ..hr_personality import FRIENDLY_SYSTEM_PROMPT
 from ..rag_retrieve import RAGRetrieveService
 
 logger = logging.getLogger(__name__)
+
+# Flag policies as potentially outdated if not updated in this many days
+POLICY_OUTDATED_DAYS = 365
 
 
 class RAGOrchestrator:
@@ -55,7 +59,15 @@ class RAGOrchestrator:
                 "fallback_summary": fallback,
             }
 
-        # 2) Answer grounded by retrieved chunks
+        # 2) Check for outdated policies
+        outdated_sources = []
+        cutoff = datetime.utcnow() - timedelta(days=POLICY_OUTDATED_DAYS)
+        for item in sources:
+            doc_updated = item.get("document_updated_at")
+            if doc_updated and isinstance(doc_updated, datetime) and doc_updated < cutoff:
+                outdated_sources.append(item.get("source", "Unknown"))
+
+        # 3) Answer grounded by retrieved chunks
         try:
             context = "\n\n".join(
                 f"[Source {idx + 1}] {item.get('content', '')}"
@@ -82,11 +94,20 @@ class RAGOrchestrator:
                 max_tokens=500,
             )
             answer = response["choices"][0]["message"]["content"]
+
+            if outdated_sources:
+                answer += (
+                    f"\n\n⚠️ Note: The following source(s) were last updated more than "
+                    f"{POLICY_OUTDATED_DAYS // 365} year(s) ago and may be outdated: "
+                    f"{', '.join(outdated_sources)}. Please verify with HR for the latest policy."
+                )
+
             return {
                 "answer": answer,
                 "citations": [item.get("source") for item in sources],
                 "sources": sources,
                 "source": "orchestrated",
+                "outdated_sources": outdated_sources,
             }
         except Exception as exc:
             logger.exception("RAG answer generation failed")

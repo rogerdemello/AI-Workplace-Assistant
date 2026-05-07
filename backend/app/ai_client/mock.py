@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Iterator
 
 
 class MockAzureOpenAIClient:
@@ -38,3 +38,25 @@ class MockAzureOpenAIClient:
 
     def embeddings(self, text: str, engine: Optional[str] = None) -> List[float]:
         return [0.1] * 1536
+
+    def chat_completion_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs
+    ) -> Iterator[str]:
+        response = self.chat_completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs
+        )
+        text = (
+            response.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        for token in str(text).split(" "):
+            if token:
+                yield token + " "

@@ -19,7 +19,7 @@ test.describe('Chat Greeting Deduplication', () => {
     });
     await page.reload();
 
-    await page.fill('#login-email', 'employee@mark.ai');
+    await page.fill('#login-email', 'employee1@infeedo.ai');
     await page.fill('#login-password', 'password123');
     await page.click('#login-submit');
 

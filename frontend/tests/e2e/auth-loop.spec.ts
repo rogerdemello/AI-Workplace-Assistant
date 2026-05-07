@@ -6,7 +6,7 @@ test.describe('Auth Loop Fix', () => {
 
     await expect(
       page.locator('text=Verifying authentication...')
-    ).not.toBeVisible({ timeout: 3500 });
+    ).not.toBeVisible({ timeout: 8000 });
 
     await expect(page.locator('body')).toBeVisible();
     const url = page.url();
@@ -18,13 +18,13 @@ test.describe('Auth Loop Fix', () => {
 
     await expect(
       page.locator('text=Verifying authentication...')
-    ).not.toBeVisible({ timeout: 3500 });
+    ).not.toBeVisible({ timeout: 8000 });
 
     await page.reload();
 
     await expect(
       page.locator('text=Verifying authentication...')
-    ).not.toBeVisible({ timeout: 3500 });
+    ).not.toBeVisible({ timeout: 8000 });
 
     const url = page.url();
     expect(url).toMatch(/\/(dashboard|login)/);

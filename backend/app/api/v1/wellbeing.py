@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ...auth import get_current_user, require_roles
 from ...database import get_db
 from ...models.user import User
+from ...services.automation_rules import AutomationRulesService
 from ...services.mark_proactive import get_mark_proactive_service
 
 router = APIRouter(prefix="/wellbeing", tags=["wellbeing"])
@@ -97,6 +98,27 @@ class WeeklySummaryResponse(BaseModel):
     avg_engagement_score: float
     top_issues: List[Dict[str, Any]]
 
+class ProactiveSuppressionPolicyResponse(BaseModel):
+    enabled: bool
+    global_daily_max: int
+    break_nudge_cooldown_minutes: int
+    break_nudge_daily_max: int
+    scheduled_reminder_cooldown_minutes: int
+    scheduled_reminder_daily_max: int
+    daily_checkin_followup_cooldown_minutes: int
+    daily_checkin_followup_daily_max: int
+
+
+class ProactiveSuppressionPolicyUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    global_daily_max: Optional[int] = Field(default=None, ge=1, le=50)
+    break_nudge_cooldown_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
+    break_nudge_daily_max: Optional[int] = Field(default=None, ge=0, le=20)
+    scheduled_reminder_cooldown_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
+    scheduled_reminder_daily_max: Optional[int] = Field(default=None, ge=0, le=50)
+    daily_checkin_followup_cooldown_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
+    daily_checkin_followup_daily_max: Optional[int] = Field(default=None, ge=0, le=20)
+
 
 def _to_reminder_response(row) -> ReminderResponse:
     return ReminderResponse(
@@ -129,6 +151,20 @@ def track_activity(
         activity_state=payload.activity_state,
         metadata=payload.metadata,
     )
+    try:
+        AutomationRulesService(db).apply_event_rules(
+            event_type="activity_event_tracked",
+            context={
+                "actor_id": current_user.id,
+                "user_id": current_user.id,
+                "event_type": payload.event_type,
+                "activity_state": payload.activity_state,
+                "nudge": result.get("nudge"),
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
     return ActivityEventResponse(**result)
 
 
@@ -139,12 +175,26 @@ def create_daily_checkin(
     db: Session = Depends(get_db),
 ):
     service = get_mark_proactive_service(db)
-    return DailyCheckinResponse(**service.record_daily_checkin(
+    result = service.record_daily_checkin(
         user_id=current_user.id,
         mood=payload.mood,
         message=payload.message,
         wants_followup=payload.wants_followup,
-    ))
+    )
+    try:
+        AutomationRulesService(db).apply_event_rules(
+            event_type="daily_checkin_recorded",
+            context={
+                "actor_id": current_user.id,
+                "user_id": current_user.id,
+                "mood": payload.mood,
+                "signal": result.get("signal") or {},
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    return DailyCheckinResponse(**result)
 
 
 @router.get("/reminders", response_model=List[ReminderResponse])
@@ -179,6 +229,18 @@ def create_reminder(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    try:
+        AutomationRulesService(db).apply_event_rules(
+            event_type="reminder_created",
+            context={
+                "actor_id": current_user.id,
+                "user_id": current_user.id,
+                "reminder": row,
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
     return _to_reminder_response(row)
 
 
@@ -194,6 +256,18 @@ def update_reminder(
     row = service.update_reminder(user_id=current_user.id, reminder_id=reminder_id, updates=updates)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder not found")
+    try:
+        AutomationRulesService(db).apply_event_rules(
+            event_type="reminder_updated",
+            context={
+                "actor_id": current_user.id,
+                "user_id": current_user.id,
+                "reminder": row,
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
     return _to_reminder_response(row)
 
 
@@ -207,6 +281,18 @@ def cancel_reminder(
     ok = service.cancel_reminder(user_id=current_user.id, reminder_id=reminder_id)
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder not found")
+    try:
+        AutomationRulesService(db).apply_event_rules(
+            event_type="reminder_cancelled",
+            context={
+                "actor_id": current_user.id,
+                "user_id": current_user.id,
+                "reminder_id": str(reminder_id),
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
     return None
 
 
@@ -228,3 +314,23 @@ def get_weekly_summary(
 ):
     service = get_mark_proactive_service(db)
     return WeeklySummaryResponse(**service.build_weekly_hr_summary())
+
+
+@router.get("/policy-suppression", response_model=ProactiveSuppressionPolicyResponse)
+def get_proactive_suppression_policy(
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    service = get_mark_proactive_service(db)
+    return ProactiveSuppressionPolicyResponse(**service.get_suppression_policy())
+
+
+@router.patch("/policy-suppression", response_model=ProactiveSuppressionPolicyResponse)
+def update_proactive_suppression_policy(
+    payload: ProactiveSuppressionPolicyUpdate,
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    service = get_mark_proactive_service(db)
+    updates = payload.model_dump(exclude_unset=True)
+    return ProactiveSuppressionPolicyResponse(**service.update_suppression_policy(updates))

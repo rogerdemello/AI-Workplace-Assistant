@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -9,15 +10,22 @@ from ...core.feature_flags import get_feature_flags
 from ...database import get_db
 from ...schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse,
-    TicketMessageCreate, TicketMessageResponse, TicketAssigneeResponse
+    TicketMessageCreate, TicketMessageResponse, TicketAssigneeResponse, TicketActionLogResponse
 )
 from ...events import event_bus
 from ...events.events import DomainEvent, EVENT_TICKET_CREATED
 from ...auth import get_current_user
+from ...auth.rbac import require_roles
 from ...models.user import User
 from ...models.ticket import TicketStatus, TicketPriority
+from ...models.action import HRAction, HRActionStatus
+from ...models.ticket_action_log import TicketActionLog
+from ...models.hr_notification import HrNotification
 from ...services.ticket import TicketService
+from ...services.automation_rules import AutomationRulesService
 from ...services.tickets.ticket_action_service import TicketActionService
+from ...services.realtime_bus import realtime_bus
+from ...services.v2.whatsapp_notify import notify_ticket_update
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 
@@ -73,6 +81,46 @@ def enrich_ticket_response(ticket, service: TicketService) -> dict:
     
     return response
 
+
+def _log_ticket_action(db: Session, ticket_id: UUID, actor_id: UUID | None, action_type: str, details: str | None = None) -> None:
+    try:
+        db.add(TicketActionLog(ticket_id=ticket_id, actor_id=actor_id, action_type=action_type, details=details))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _notify_hr(
+    db: Session,
+    ticket_id: UUID,
+    actor_id: UUID | None,
+    title: str,
+    body: str | None = None,
+    notification_type: str = "ticket_update",
+    severity: str = "info",
+) -> None:
+    try:
+        db.add(
+            HrNotification(
+                ticket_id=ticket_id,
+                actor_id=actor_id,
+                title=title,
+                body=body,
+                notification_type=notification_type,
+                severity=severity,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _publish_hr_realtime(event_type: str, payload: dict) -> None:
+    try:
+        asyncio.run(realtime_bus.publish(event_type, payload))
+    except Exception:
+        pass
+
 @router.post("", response_model=TicketResponse)
 def create_ticket(
     ticket: TicketCreate,
@@ -101,6 +149,28 @@ def create_ticket(
 
     if is_new:
         action_service.auto_assign_ticket(new_ticket)
+        try:
+            AutomationRulesService(service.db).apply_ticket_created_rules(new_ticket, actor_id=current_user.id)
+        except Exception:
+            service.db.rollback()
+        _notify_hr(
+            service.db,
+            new_ticket.id,
+            current_user.id,
+            title="New ticket raised",
+            body=(ticket.query or "")[:180],
+            notification_type="ticket_created",
+            severity="info",
+        )
+        _publish_hr_realtime(
+            "hr_ticket_created",
+            {
+                "ticket_id": str(new_ticket.id),
+                "user_id": str(new_ticket.user_id),
+                "priority": str(new_ticket.priority.value if hasattr(new_ticket.priority, "value") else new_ticket.priority),
+                "category": str(new_ticket.category),
+            },
+        )
 
     try:
         event_bus.publish(
@@ -165,6 +235,23 @@ class TicketBulkActionRequest(BaseModel):
     assigned_to: Optional[UUID] = None
 
 
+class TicketEscalateRequest(BaseModel):
+    reason: Optional[str] = "Escalated by HR"
+
+
+class TicketScheduleCheckinRequest(BaseModel):
+    scheduled_at: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
+class TicketActionResponse(BaseModel):
+    detail: str
+
+
+class TicketCloseRequest(BaseModel):
+    resolution_note: Optional[str] = "Resolved by HR"
+
+
 @router.post("/bulk-action", response_model=List[TicketResponse])
 def bulk_update_tickets(
     payload: TicketBulkActionRequest,
@@ -201,6 +288,33 @@ def assign_ticket(
     ticket = action_service.assign_ticket(ticket_id=ticket_id, assignee_id=payload.assignee_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    _log_ticket_action(service.db, ticket.id, current_user.id, "reassign", f"assigned_to={payload.assignee_id}")
+    _notify_hr(
+        service.db,
+        ticket.id,
+        current_user.id,
+        title="Ticket reassigned",
+        body=f"Ticket reassigned to {payload.assignee_id}",
+        notification_type="ticket_reassigned",
+        severity="info",
+    )
+    try:
+        AutomationRulesService(service.db).apply_event_rules(
+            event_type="ticket_reassigned",
+            context={
+                "ticket": ticket,
+                "actor_id": current_user.id,
+                "user_id": ticket.user_id,
+                "assignee_id": payload.assignee_id,
+            },
+        )
+        service.db.commit()
+    except Exception:
+        service.db.rollback()
+    _publish_hr_realtime(
+        "hr_ticket_reassigned",
+        {"ticket_id": str(ticket.id), "assignee_id": str(payload.assignee_id)},
+    )
     return enrich_ticket_response(ticket, service)
 
 
@@ -217,6 +331,238 @@ def enforce_ticket_sla(
     ticket = action_service.enforce_sla(ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    return enrich_ticket_response(ticket, service)
+
+
+@router.post("/{ticket_id}/escalate", response_model=TicketResponse)
+def escalate_ticket(
+    ticket_id: UUID,
+    payload: TicketEscalateRequest,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service),
+):
+    if current_user.role not in ["hr", "admin"]:
+        raise HTTPException(status_code=403, detail="Only HR/Admin can escalate tickets")
+
+    existing = service.get_ticket(ticket_id, current_user.id, is_hr=True)
+    previous_status = (
+        existing.status.value if existing and hasattr(existing.status, "value") else str(existing.status) if existing else None
+    )
+    ticket = service.update_ticket(
+        ticket_id=ticket_id,
+        user_id=current_user.id,
+        is_hr=True,
+        status=TicketStatus.escalated,
+        priority=TicketPriority.critical,
+    )
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    service.add_message(
+        ticket_id=ticket.id,
+        sender_id=current_user.id,
+        message_text=(payload.reason or "Escalated by HR"),
+    )
+    _log_ticket_action(service.db, ticket.id, current_user.id, "escalate", payload.reason or "Escalated by HR")
+    _notify_hr(
+        service.db,
+        ticket.id,
+        current_user.id,
+        title="Ticket escalated",
+        body=payload.reason or "Escalated by HR",
+        notification_type="ticket_escalated",
+        severity="high",
+    )
+    try:
+        AutomationRulesService(service.db).apply_ticket_updated_rules(
+            ticket,
+            previous_status=previous_status,
+            actor_id=current_user.id,
+        )
+        AutomationRulesService(service.db).apply_event_rules(
+            event_type="ticket_escalated",
+            context={
+                "ticket": ticket,
+                "actor_id": current_user.id,
+                "user_id": ticket.user_id,
+            },
+        )
+        service.db.commit()
+    except Exception:
+        service.db.rollback()
+    _publish_hr_realtime("hr_ticket_escalated", {"ticket_id": str(ticket.id)})
+    return enrich_ticket_response(ticket, service)
+
+
+@router.post("/{ticket_id}/schedule-checkin", response_model=TicketActionResponse)
+def schedule_ticket_checkin(
+    ticket_id: UUID,
+    payload: TicketScheduleCheckinRequest,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service),
+):
+    if current_user.role not in ["hr", "admin"]:
+        raise HTTPException(status_code=403, detail="Only HR/Admin can schedule check-ins")
+
+    ticket = service.get_ticket(ticket_id, current_user.id, is_hr=True)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    action = HRAction(
+        employee_id=ticket.user_id,
+        action_type="schedule_checkin",
+        status=HRActionStatus.pending,
+        scheduled_at=payload.scheduled_at,
+        created_by=current_user.id,
+        notes=payload.notes or "Scheduled from ticket panel",
+    )
+    service.db.add(action)
+    service.db.commit()
+
+    service.add_message(
+        ticket_id=ticket.id,
+        sender_id=current_user.id,
+        message_text=f"HR scheduled check-in ({action.id})",
+    )
+    _log_ticket_action(service.db, ticket.id, current_user.id, "schedule_checkin", payload.notes or "Scheduled check-in")
+    _notify_hr(
+        service.db,
+        ticket.id,
+        current_user.id,
+        title="Check-in scheduled",
+        body=payload.notes or "Scheduled check-in from ticket",
+        notification_type="ticket_checkin",
+        severity="info",
+    )
+    try:
+        AutomationRulesService(service.db).apply_event_rules(
+            event_type="ticket_checkin_scheduled",
+            context={
+                "ticket": ticket,
+                "actor_id": current_user.id,
+                "user_id": ticket.user_id,
+                "notes": payload.notes or "",
+            },
+        )
+        service.db.commit()
+    except Exception:
+        service.db.rollback()
+    _publish_hr_realtime("hr_ticket_checkin_scheduled", {"ticket_id": str(ticket.id)})
+
+    return {"detail": "Check-in scheduled and linked to ticket timeline."}
+
+
+@router.post("/{ticket_id}/internal-notes", response_model=TicketMessageResponse)
+def add_internal_note(
+    ticket_id: UUID,
+    message: TicketMessageCreate,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service),
+):
+    if current_user.role not in ["hr", "admin"]:
+        raise HTTPException(status_code=403, detail="Only HR/Admin can add internal notes")
+
+    ticket = service.get_ticket(ticket_id, current_user.id, is_hr=True)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    msg = service.add_message(ticket_id, current_user.id, message.message_text, is_internal=True)
+    _log_ticket_action(service.db, ticket.id, current_user.id, "internal_note", message.message_text)
+    _notify_hr(
+        service.db,
+        ticket.id,
+        current_user.id,
+        title="Internal note added",
+        body=message.message_text,
+        notification_type="ticket_internal_note",
+        severity="info",
+    )
+    try:
+        AutomationRulesService(service.db).apply_event_rules(
+            event_type="ticket_internal_note_added",
+            context={
+                "ticket": ticket,
+                "actor_id": current_user.id,
+                "user_id": ticket.user_id,
+                "note_text": message.message_text,
+            },
+        )
+        service.db.commit()
+    except Exception:
+        service.db.rollback()
+    _publish_hr_realtime("hr_ticket_internal_note", {"ticket_id": str(ticket.id)})
+    return msg
+
+
+@router.post("/{ticket_id}/close", response_model=TicketResponse)
+def close_ticket(
+    ticket_id: UUID,
+    payload: TicketCloseRequest,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service),
+):
+    if current_user.role not in ["hr", "admin"]:
+        raise HTTPException(status_code=403, detail="Only HR/Admin can close tickets")
+
+    existing = service.get_ticket(ticket_id, current_user.id, is_hr=True)
+    previous_status = (
+        existing.status.value if existing and hasattr(existing.status, "value") else str(existing.status) if existing else None
+    )
+    ticket = service.update_ticket(
+        ticket_id=ticket_id,
+        user_id=current_user.id,
+        is_hr=True,
+        status=TicketStatus.resolved,
+    )
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    service.add_message(
+        ticket_id=ticket.id,
+        sender_id=current_user.id,
+        message_text=(payload.resolution_note or "Resolved by HR"),
+        is_internal=True,
+    )
+    _log_ticket_action(service.db, ticket.id, current_user.id, "close", payload.resolution_note or "Resolved by HR")
+    _notify_hr(
+        service.db,
+        ticket.id,
+        current_user.id,
+        title="Ticket closed",
+        body=payload.resolution_note or "Resolved by HR",
+        notification_type="ticket_closed",
+        severity="info",
+    )
+    try:
+        AutomationRulesService(service.db).apply_ticket_updated_rules(
+            ticket,
+            previous_status=previous_status,
+            actor_id=current_user.id,
+        )
+        AutomationRulesService(service.db).apply_event_rules(
+            event_type="ticket_closed",
+            context={
+                "ticket": ticket,
+                "actor_id": current_user.id,
+                "user_id": ticket.user_id,
+                "resolution_note": payload.resolution_note or "Resolved by HR",
+            },
+        )
+        service.db.commit()
+    except Exception:
+        service.db.rollback()
+    _publish_hr_realtime("hr_ticket_closed", {"ticket_id": str(ticket.id)})
+    try:
+        preview = (ticket.query or "")[:120]
+        notify_ticket_update(
+            service.db,
+            user_id=ticket.user_id,
+            kind="closed",
+            summary=preview,
+            detail=(payload.resolution_note or "")[:500],
+        )
+    except Exception:
+        pass
     return enrich_ticket_response(ticket, service)
 
 @router.get("/{ticket_id}", response_model=TicketResponse)
@@ -239,6 +585,10 @@ def update_ticket(
     service: TicketService = Depends(get_ticket_service)
 ):
     is_hr = current_user.role in ["hr", "admin"]
+    existing = service.get_ticket(ticket_id, current_user.id, is_hr)
+    previous_status = (
+        existing.status.value if existing and hasattr(existing.status, "value") else str(existing.status) if existing else None
+    )
     ticket = service.update_ticket(
         ticket_id=ticket_id,
         user_id=current_user.id,
@@ -249,6 +599,18 @@ def update_ticket(
     )
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    try:
+        AutomationRulesService(service.db).apply_ticket_updated_rules(
+            ticket,
+            previous_status=previous_status,
+            actor_id=current_user.id,
+        )
+    except Exception:
+        service.db.rollback()
+    _publish_hr_realtime(
+        "hr_ticket_updated",
+        {"ticket_id": str(ticket.id), "status": str(ticket.status.value if hasattr(ticket.status, "value") else ticket.status)},
+    )
     return enrich_ticket_response(ticket, service)
 
 @router.get("/{ticket_id}/messages", response_model=List[TicketMessageResponse])
@@ -264,6 +626,38 @@ def list_ticket_messages(
     return messages
 
 
+@router.get("/{ticket_id}/actions", response_model=List[TicketActionLogResponse])
+def list_ticket_actions(
+    ticket_id: UUID,
+    current_user=Depends(require_roles(["hr", "admin"])),
+    service: TicketService = Depends(get_ticket_service),
+):
+    ticket = service.get_ticket(ticket_id, current_user.id, True)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    return (
+        service.db.query(TicketActionLog)
+        .filter(TicketActionLog.ticket_id == ticket_id)
+        .order_by(TicketActionLog.created_at.desc())
+        .all()
+    )
+
+
+@router.get("/{ticket_id}/related", response_model=List[TicketResponse])
+def list_related_tickets(
+    ticket_id: UUID,
+    current_user=Depends(require_roles(["hr", "admin"])),
+    service: TicketService = Depends(get_ticket_service),
+):
+    ticket = service.get_ticket(ticket_id, current_user.id, True)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    related = service.list_related_tickets(ticket=ticket, limit=8)
+    return [enrich_ticket_response(row, service) for row in related]
+
+
 @router.post("/{ticket_id}/messages", response_model=TicketMessageResponse)
 def add_ticket_message(
     ticket_id: UUID,
@@ -277,6 +671,42 @@ def add_ticket_message(
         raise HTTPException(status_code=404, detail="Ticket not found")
     
     msg = service.add_message(ticket_id, current_user.id, message.message_text)
+    if is_hr:
+        _log_ticket_action(service.db, ticket.id, current_user.id, "employee_visible_reply", message.message_text)
+        _notify_hr(
+            service.db,
+            ticket.id,
+            current_user.id,
+            title="HR reply posted",
+            body=message.message_text,
+            notification_type="ticket_reply",
+            severity="info",
+        )
+        try:
+            AutomationRulesService(service.db).apply_event_rules(
+                event_type="ticket_reply_posted",
+                context={
+                    "ticket": ticket,
+                    "actor_id": current_user.id,
+                    "user_id": ticket.user_id,
+                    "message_text": message.message_text,
+                },
+            )
+            service.db.commit()
+        except Exception:
+            service.db.rollback()
+        _publish_hr_realtime("hr_ticket_reply_posted", {"ticket_id": str(ticket.id)})
+        try:
+            preview = (ticket.query or "")[:100]
+            notify_ticket_update(
+                service.db,
+                user_id=ticket.user_id,
+                kind="hr_reply",
+                summary=preview,
+                detail=(message.message_text or "")[:500],
+            )
+        except Exception:
+            pass
     return msg
 
 

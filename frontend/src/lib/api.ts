@@ -5,7 +5,6 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-const SESSION_KEY = 'mark-auth-session';
 let validatedAuthToken: string | null = null;
 
 // ============================================================================
@@ -91,44 +90,6 @@ export interface ApiError {
 // Auth Utilities
 // ============================================================================
 
-/**
- * Get authentication headers with auto-login for demo mode
- */
-async function loginViaDemoSession(): Promise<string | null> {
-  let email = 'demo@example.com';
-  let name = 'Demo User';
-
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as { email?: string; name?: string };
-      email = parsed.email?.trim() || email;
-      name = parsed.name?.trim() || name;
-    }
-  } catch {
-    // Ignore malformed session payloads.
-  }
-
-  const loginRes = await fetch(`${API_BASE_URL}/api/v1/demo/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, email }),
-  });
-
-  if (!loginRes.ok) {
-    return null;
-  }
-
-  const loginData = (await loginRes.json()) as { access_token?: string };
-  if (!loginData.access_token) {
-    return null;
-  }
-
-  localStorage.setItem('auth_token', loginData.access_token);
-  validatedAuthToken = loginData.access_token;
-  return loginData.access_token;
-}
-
 async function isTokenValid(token: string): Promise<boolean> {
   if (validatedAuthToken === token) {
     return true;
@@ -161,17 +122,6 @@ const getAuthHeaders = async (): Promise<HeadersInit> => {
     }
   }
 
-  if (!token) {
-    try {
-      const demoToken = await loginViaDemoSession();
-      if (demoToken) {
-        token = demoToken;
-      }
-    } catch (e) {
-      console.error('Demo login failed:', e);
-    }
-  }
-  
   return {
     'Content-Type': 'application/json',
     ...(token ? { 'Authorization': `Bearer ${token}` } : {})

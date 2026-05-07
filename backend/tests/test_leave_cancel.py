@@ -47,12 +47,13 @@ def test_employee_cannot_cancel_non_pending_leave(client, auth_headers, hr_auth_
 
 
 def test_overlapping_leave_returns_warning(client, auth_headers):
+    base = date.today() + timedelta(days=14)
     response_a = client.post(
         "/api/v1/leave",
         headers=auth_headers,
         json={
-            "start_date": "2026-05-01",
-            "end_date": "2026-05-03",
+            "start_date": base.isoformat(),
+            "end_date": (base + timedelta(days=2)).isoformat(),
             "leave_type": "paid",
             "reason": "Vacation",
         },
@@ -63,8 +64,8 @@ def test_overlapping_leave_returns_warning(client, auth_headers):
         "/api/v1/leave",
         headers=auth_headers,
         json={
-            "start_date": "2026-05-02",
-            "end_date": "2026-05-04",
+            "start_date": (base + timedelta(days=1)).isoformat(),
+            "end_date": (base + timedelta(days=3)).isoformat(),
             "leave_type": "paid",
             "reason": "Vacation part 2",
         },

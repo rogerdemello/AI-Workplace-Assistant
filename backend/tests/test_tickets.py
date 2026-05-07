@@ -237,6 +237,26 @@ class TestTicketMessages:
         )
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
+    def test_hr_internal_note_hidden_from_employee(self, client, test_user, hr_auth_headers, auth_headers):
+        create_response = client.post("/api/v1/tickets", headers=auth_headers, json={
+            "query": "Need help privately",
+            "category": "general",
+            "priority": "low"
+        })
+        ticket_id = create_response.json()["id"]
+
+        note_response = client.post(
+            f"/api/v1/tickets/{ticket_id}/internal-notes",
+            headers=hr_auth_headers,
+            json={"message_text": "Internal HR-only note"}
+        )
+        assert note_response.status_code == status.HTTP_200_OK
+        assert note_response.json()["is_internal"] is True
+
+        employee_messages = client.get(f"/api/v1/tickets/{ticket_id}/messages", headers=auth_headers)
+        assert employee_messages.status_code == status.HTTP_200_OK
+        assert all(msg.get("is_internal") is False for msg in employee_messages.json())
+
 
 class TestTicketSLA:
     """Tests for ticket SLA functionality."""
@@ -298,4 +318,69 @@ class TestTicketAssignees:
 
     def test_employee_cannot_list_assignees(self, client, auth_headers):
         response = client.get("/api/v1/tickets/assignees", headers=auth_headers)
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+class TestRelatedTickets:
+    def test_hr_can_view_related_tickets(self, client, auth_headers, hr_auth_headers):
+        first = client.post("/api/v1/tickets", headers=auth_headers, json={
+            "query": "same issue for related ticket test",
+            "category": "general",
+            "priority": "low",
+        })
+        assert first.status_code == status.HTTP_200_OK
+        second = client.post("/api/v1/tickets", headers=hr_auth_headers, json={
+            "query": "same issue for related ticket test",
+            "category": "general",
+            "priority": "low",
+        })
+        assert second.status_code == status.HTTP_200_OK
+
+        related = client.get(f"/api/v1/tickets/{first.json()['id']}/related", headers=hr_auth_headers)
+        assert related.status_code == status.HTTP_200_OK
+        ids = {row["id"] for row in related.json()}
+        assert second.json()["id"] in ids
+
+    def test_employee_cannot_view_related_tickets(self, client, auth_headers):
+        created = client.post("/api/v1/tickets", headers=auth_headers, json={
+            "query": "employee ticket",
+            "category": "general",
+            "priority": "low",
+        })
+        assert created.status_code == status.HTTP_200_OK
+        response = client.get(f"/api/v1/tickets/{created.json()['id']}/related", headers=auth_headers)
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+class TestTicketActionLogs:
+    def test_hr_can_view_ticket_action_logs(self, client, auth_headers, hr_auth_headers):
+        created = client.post("/api/v1/tickets", headers=auth_headers, json={
+            "query": "action log ticket",
+            "category": "general",
+            "priority": "low",
+        })
+        assert created.status_code == status.HTTP_200_OK
+        ticket_id = created.json()["id"]
+
+        note = client.post(
+            f"/api/v1/tickets/{ticket_id}/internal-notes",
+            headers=hr_auth_headers,
+            json={"message_text": "Track this internally"},
+        )
+        assert note.status_code == status.HTTP_200_OK
+
+        actions = client.get(f"/api/v1/tickets/{ticket_id}/actions", headers=hr_auth_headers)
+        assert actions.status_code == status.HTTP_200_OK
+        assert any(row["action_type"] == "internal_note" for row in actions.json())
+
+    def test_employee_cannot_view_ticket_action_logs(self, client, auth_headers):
+        created = client.post("/api/v1/tickets", headers=auth_headers, json={
+            "query": "employee action log ticket",
+            "category": "general",
+            "priority": "low",
+        })
+        assert created.status_code == status.HTTP_200_OK
+        ticket_id = created.json()["id"]
+
+        response = client.get(f"/api/v1/tickets/{ticket_id}/actions", headers=auth_headers)
         assert response.status_code == status.HTTP_403_FORBIDDEN

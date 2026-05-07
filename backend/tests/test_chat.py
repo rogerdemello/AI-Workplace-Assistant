@@ -102,7 +102,7 @@ class TestAddMessage:
             json={"message_text": "", "sender": "user"}
         )
         # Should succeed but with empty text (validation may differ)
-        assert response.status_code in [status.HTTP_200_OK, status.HTTP_422_UNPROCESSABLE_ENTITY]
+        assert response.status_code in [status.HTTP_200_OK, status.HTTP_422_UNPROCESSABLE_CONTENT]
 
     def test_add_message_to_nonexistent_conversation(self, client, test_user, auth_headers, mock_redis):
         """Test adding message to non-existent conversation."""

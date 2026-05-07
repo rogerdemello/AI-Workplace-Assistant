@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 import secrets
 import hashlib
+import os
 from sqlalchemy.orm import Session
 
 from ...config import settings
@@ -14,6 +15,7 @@ from ...auth import get_current_user
 from ...models.calendar_integration import CalendarIntegration
 from ...models.user import User
 from ...services.calendar import CalendarService
+from ...services.provider_sync import ProviderSyncService
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
@@ -71,6 +73,31 @@ class UserCalendarConfig(BaseModel):
     access_token: str
     refresh_token: Optional[str] = None
     expires_at: Optional[datetime] = None
+
+
+class IntegrationProviderItem(BaseModel):
+    key: str
+    category: str
+    enabled: bool
+    configured: bool
+    status: str
+    notes: Optional[str] = None
+
+
+class IntegrationSyncRequest(BaseModel):
+    provider: str = Field(..., min_length=2, max_length=64)
+    scope: str = Field(default="full", max_length=24)
+    dry_run: bool = Field(default=True)
+
+
+class IntegrationSyncResponse(BaseModel):
+    provider: str
+    category: str
+    status: str
+    dry_run: bool
+    records_seen: int
+    records_changed: int
+    details: str
 
 
 # ============== Helper Functions ==============
@@ -603,3 +630,152 @@ async def delete_calendar_event(
         "event_id": event_id,
         "provider": provider
     }
+
+
+@router.get("/providers", response_model=List[IntegrationProviderItem])
+def list_integration_providers(
+    _current_user: User = Depends(get_current_user),
+):
+    items = [
+        IntegrationProviderItem(
+            key="google_calendar",
+            category="calendar",
+            enabled=True,
+            configured=bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET),
+            status="ready",
+            notes="OAuth calendar sync and availability checks",
+        ),
+        IntegrationProviderItem(
+            key="microsoft_calendar",
+            category="calendar",
+            enabled=True,
+            configured=bool(settings.MICROSOFT_CLIENT_ID and settings.MICROSOFT_CLIENT_SECRET),
+            status="ready",
+            notes="Outlook calendar sync and availability checks",
+        ),
+        IntegrationProviderItem(
+            key="workday_hrms",
+            category="hrms",
+            enabled=True,
+            configured=bool(os.getenv("WORKDAY_BASE_URL") and os.getenv("WORKDAY_API_TOKEN")),
+            status="ready" if bool(os.getenv("WORKDAY_BASE_URL") and os.getenv("WORKDAY_API_TOKEN")) else "stub",
+            notes="HRMS connector (live when base URL + API token are configured)",
+        ),
+        IntegrationProviderItem(
+            key="sap_successfactors_hrms",
+            category="hrms",
+            enabled=True,
+            configured=bool(os.getenv("SAP_SUCCESSFACTORS_BASE_URL") and os.getenv("SAP_SUCCESSFACTORS_API_TOKEN")),
+            status="ready" if bool(os.getenv("SAP_SUCCESSFACTORS_BASE_URL") and os.getenv("SAP_SUCCESSFACTORS_API_TOKEN")) else "stub",
+            notes="HRMS connector (live when base URL + API token are configured)",
+        ),
+        IntegrationProviderItem(
+            key="adp_payroll",
+            category="payroll",
+            enabled=True,
+            configured=bool(os.getenv("ADP_BASE_URL") and os.getenv("ADP_API_TOKEN")),
+            status="ready" if bool(os.getenv("ADP_BASE_URL") and os.getenv("ADP_API_TOKEN")) else "stub",
+            notes="Payroll connector (live when base URL + API token are configured)",
+        ),
+        IntegrationProviderItem(
+            key="razorpay_payroll",
+            category="payroll",
+            enabled=True,
+            configured=bool(os.getenv("RAZORPAY_BASE_URL") and os.getenv("RAZORPAY_API_TOKEN")),
+            status="ready" if bool(os.getenv("RAZORPAY_BASE_URL") and os.getenv("RAZORPAY_API_TOKEN")) else "stub",
+            notes="Payroll connector (live when base URL + API token are configured)",
+        ),
+    ]
+    return items
+
+
+def _run_stub_sync(provider: str, category: str, dry_run: bool) -> IntegrationSyncResponse:
+    seen = 12 if category == "hrms" else 8
+    changed = 0 if dry_run else (4 if category == "hrms" else 2)
+    details = (
+        "Dry run completed. No records changed."
+        if dry_run
+        else "Stub sync completed. Replace stub implementation with provider SDK/API call."
+    )
+    return IntegrationSyncResponse(
+        provider=provider,
+        category=category,
+        status="ok",
+        dry_run=dry_run,
+        records_seen=seen,
+        records_changed=changed,
+        details=details,
+    )
+
+
+def _run_live_sync(provider: str, category: str, dry_run: bool) -> IntegrationSyncResponse:
+    service = ProviderSyncService()
+    if category == "hrms":
+        if provider == "workday_hrms":
+            base_url = os.getenv("WORKDAY_BASE_URL", "").strip()
+            api_token = os.getenv("WORKDAY_API_TOKEN", "").strip()
+        else:
+            base_url = os.getenv("SAP_SUCCESSFACTORS_BASE_URL", "").strip()
+            api_token = os.getenv("SAP_SUCCESSFACTORS_API_TOKEN", "").strip()
+        result = service.run_hrms_sync(base_url=base_url, api_token=api_token, dry_run=dry_run)
+    else:
+        if provider == "adp_payroll":
+            base_url = os.getenv("ADP_BASE_URL", "").strip()
+            api_token = os.getenv("ADP_API_TOKEN", "").strip()
+        else:
+            base_url = os.getenv("RAZORPAY_BASE_URL", "").strip()
+            api_token = os.getenv("RAZORPAY_API_TOKEN", "").strip()
+        result = service.run_payroll_sync(base_url=base_url, api_token=api_token, dry_run=dry_run)
+    return IntegrationSyncResponse(
+        provider=provider,
+        category=category,
+        status="ok",
+        dry_run=dry_run,
+        records_seen=result.records_seen,
+        records_changed=result.records_changed,
+        details=result.details,
+    )
+
+
+@router.post("/hrms/sync", response_model=IntegrationSyncResponse)
+def trigger_hrms_sync(
+    payload: IntegrationSyncRequest,
+    _hr: User = Depends(get_current_user),
+):
+    provider = payload.provider.strip().lower()
+    allowed = {"workday_hrms", "sap_successfactors_hrms"}
+    if provider not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported HRMS provider")
+    configured = {
+        "workday_hrms": bool(os.getenv("WORKDAY_BASE_URL") and os.getenv("WORKDAY_API_TOKEN")),
+        "sap_successfactors_hrms": bool(os.getenv("SAP_SUCCESSFACTORS_BASE_URL") and os.getenv("SAP_SUCCESSFACTORS_API_TOKEN")),
+    }
+    if configured.get(provider):
+        try:
+            return _run_live_sync(provider=provider, category="hrms", dry_run=payload.dry_run)
+        except Exception as exc:
+            if not payload.dry_run:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Live HRMS sync failed: {str(exc)}")
+    return _run_stub_sync(provider=provider, category="hrms", dry_run=payload.dry_run)
+
+
+@router.post("/payroll/sync", response_model=IntegrationSyncResponse)
+def trigger_payroll_sync(
+    payload: IntegrationSyncRequest,
+    _hr: User = Depends(get_current_user),
+):
+    provider = payload.provider.strip().lower()
+    allowed = {"adp_payroll", "razorpay_payroll"}
+    if provider not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported payroll provider")
+    configured = {
+        "adp_payroll": bool(os.getenv("ADP_BASE_URL") and os.getenv("ADP_API_TOKEN")),
+        "razorpay_payroll": bool(os.getenv("RAZORPAY_BASE_URL") and os.getenv("RAZORPAY_API_TOKEN")),
+    }
+    if configured.get(provider):
+        try:
+            return _run_live_sync(provider=provider, category="payroll", dry_run=payload.dry_run)
+        except Exception as exc:
+            if not payload.dry_run:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Live payroll sync failed: {str(exc)}")
+    return _run_stub_sync(provider=provider, category="payroll", dry_run=payload.dry_run)

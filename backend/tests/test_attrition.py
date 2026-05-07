@@ -62,6 +62,47 @@ def test_attrition_endpoint_returns_db_backed_scores(client, db, admin_auth_head
     assert 0 <= user_risk["risk_score"] <= 1
 
 
+def test_attrition_user_endpoint_returns_explainable_calibrated_risk(client, db, admin_auth_headers, test_user):
+    from app.models.conversation import Conversation, Message, MessageSender, SentimentLabel
+
+    conversation = Conversation(user_id=test_user.id)
+    db.add(conversation)
+    db.flush()
+    db.add_all(
+        [
+            Message(
+                conversation_id=conversation.id,
+                sender=MessageSender.user,
+                message_text="I feel disconnected from the team",
+                sentiment=SentimentLabel.negative,
+            ),
+            Message(
+                conversation_id=conversation.id,
+                sender=MessageSender.user,
+                message_text="Workload has been overwhelming",
+                sentiment=SentimentLabel.negative,
+            ),
+        ]
+    )
+    db.commit()
+
+    response = client.get(f"/api/v1/analytics/attrition/{test_user.id}", headers=admin_auth_headers)
+    assert response.status_code == status.HTTP_200_OK
+    payload = response.json()
+    assert payload["user_id"] == str(test_user.id)
+    assert payload["name"] == test_user.name
+    assert 0 <= payload["risk_score"] <= 1
+    assert 0 <= payload["calibrated_risk_score"] <= 1
+    assert 0 <= payload["confidence"] <= 1
+    assert payload["calibration_band"] in {"low_confidence", "medium_confidence", "high_confidence"}
+    assert isinstance(payload["factors"], list)
+    assert len(payload["factors"]) >= 1
+    first_factor = payload["factors"][0]
+    assert "name" in first_factor
+    assert "contribution_pct" in first_factor
+    assert isinstance(payload["history"], list)
+
+
 def test_attrition_endpoint_filters_by_department(client, db, admin_auth_headers):
     from app.auth import hash_password
     from app.models.department import Department

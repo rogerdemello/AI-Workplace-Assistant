@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { jwtFromClientPayload } from '@/lib/server-chat-jwt';
 
 interface ChatBridgeRequest {
   message: string;
@@ -64,33 +65,8 @@ function apiBaseUrl(): string {
   );
 }
 
-async function getChatJwt(payload: ChatBridgeRequest): Promise<string | null> {
-  const base = apiBaseUrl();
-  const email = (payload.userEmail || 'demo@example.com').trim() || 'demo@example.com';
-  const name = (payload.userName || 'Demo User').trim() || 'Demo User';
-
-  const trimmed = payload.authToken?.trim();
-  if (trimmed) {
-    return trimmed;
-  }
-
-  try {
-    const loginResponse = await fetch(`${base}/api/v1/demo/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email }),
-      cache: 'no-store',
-    });
-
-    if (!loginResponse.ok) {
-      return null;
-    }
-
-    const loginData = (await loginResponse.json()) as { access_token?: string };
-    return loginData.access_token ?? null;
-  } catch {
-    return null;
-  }
+function getChatJwt(payload: ChatBridgeRequest): string | null {
+  return jwtFromClientPayload(payload.authToken);
 }
 
 export async function POST(request: NextRequest) {
@@ -105,12 +81,12 @@ export async function POST(request: NextRequest) {
   }
 
   const base = apiBaseUrl();
-  let token = await getChatJwt(payload);
+  const token = getChatJwt(payload);
   if (!token) {
     return NextResponse.json(
       {
         error: 'Unable to authenticate chat request',
-        hint: 'Start the FastAPI backend and sign in so a JWT is available, or ensure demo login works for this user email.',
+        hint: 'Sign in via the app login so `auth_token` is stored, or pass `authToken` in the chat request body.',
         backendBase: base,
       },
       { status: 502 }

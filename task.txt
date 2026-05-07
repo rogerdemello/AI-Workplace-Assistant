@@ -1,0 +1,108 @@
+================================================================================
+MARK — TASK & ROADMAP (task.txt)
+================================================================================
+Use this file to prioritize engineering work: sentiment, chat→HR signals, UX,
+and “world class” quality. Update dates/owners as you ship.
+
+--------------------------------------------------------------------------------
+1. WHAT NEEDS TO BE DONE
+--------------------------------------------------------------------------------
+
+A. Sentiment & signals (core product)
+   [ ] Ensure every employee chat path persists the sentiment pipeline (unified
+       /message, /respond, /respond/stream, /messages) — verify in staging.
+   [ ] Backfill or reconcile: if prod had partial coverage, run a one-off job
+       to re-process recent messages into sentiment_logs where missing (optional).
+   [ ] HR dashboard: confirm employee list shows updated sentiment_score,
+       trend, risk, top_emotion after real chat traffic (smoke test).
+
+B. HR visibility & trust
+   [ ] Document for HR: which screens map to which APIs (/analytics/dashboard,
+       /employees, /emotions, attrition, etc.).
+   [ ] Add “last updated from chat” or signal freshness in UI where useful
+       (privacy-safe: no raw text or redacted preview behind policy).
+
+C. Quality & operations
+   [ ] Load test chat + analytics under expected concurrent users.
+   [ ] Monitoring: structured logs + metrics for pipeline failures, latency,
+       and HR API errors.
+   [ ] Security review: RBAC on analytics routes, PII in logs, retention.
+
+D. Product polish (when core is stable)
+   [ ] Manager vs HR views: scoped data only (direct reports vs org).
+   [ ] Alerts: configurable thresholds (e.g. sustained negative sentiment).
+
+--------------------------------------------------------------------------------
+2. HOW TO DO IT (practical steps)
+--------------------------------------------------------------------------------
+
+Sentiment pipeline (already wired in code — operationalize it)
+   1. Deploy backend with latest chat.py pipeline helper.
+   2. Run integration tests: pytest backend/tests/test_chat_sentiment_hr.py
+   3. Manual: employee sends chat → HR refreshes Pulse/Employees → scores move.
+   4. If using multiple frontends, confirm they call POST /api/v1/chat/message
+      OR respond/stream — both now update logs.
+
+HR dashboard verification
+   1. Log in as HR → GET /api/v1/analytics/dashboard (or use UI).
+   2. Cross-check one employee: SentimentLog rows vs dashboard sentiment_score.
+   3. Document any delay (caching, refresh interval).
+
+Safe rollout
+   1. Feature flag optional: “strict_pipeline” logging only before full enforce.
+   2. Staging → canary → full prod; watch error rate on SentimentPipelineService.
+
+--------------------------------------------------------------------------------
+3. HOW TO MAKE IT WORLD CLASS
+--------------------------------------------------------------------------------
+
+Accuracy & fairness
+   - Move beyond lexicon-only: add a managed model (Azure/OpenAI/other) with
+     fallback to rules; evaluate on labeled in-domain data.
+   - Multilingual support; test for bias across regions and roles.
+
+Reliability
+   - Idempotent pipeline writes; dead-letter queue for failed processing;
+     replay jobs.
+
+Privacy & compliance
+   - Minimize stored raw text; prefer aggregates; clear retention; DPIA-ready
+     documentation; role-based redaction in HR UI.
+
+Explainability
+   - HR sees “why” (factors: recent negative ratio, topics, emotion mix) not
+     only a single number.
+
+Human in the loop
+   - Escalation workflows (HR review, manager coaching) tied to signals, not
+     auto-disciplinary use of scores.
+
+Performance
+   - Sub-second chat; async pipeline if needed; precomputed dashboard tiles.
+
+--------------------------------------------------------------------------------
+4. ADVANCEMENT PLANS (phased)
+--------------------------------------------------------------------------------
+
+Phase 1 — Solidify (0–4 weeks)
+   - End-to-end tests: chat → DB → HR API; staging sign-off checklist.
+   - Observability baseline: dashboards for errors and latency.
+   - HR admin doc: one-pager on metrics definitions.
+
+Phase 2 — Smarter signals (1–3 months)
+   - Hybrid sentiment: API + lexicon fallback; calibration to 0–100 scale.
+   - Conversation-level scoring (rolling window of last N user messages).
+   - Emotion + topic trends: already partially built — expand coverage and UI.
+
+Phase 3 — Proactive & integrated (3–6 months)
+   - Rule engine + notifications (email/Slack/Teams) with suppression/cooldowns.
+   - Optional HR case/ticket creation from high-risk patterns.
+   - Integrations: HRIS for org chart accuracy (manager_id, department).
+
+Phase 4 — Scale & enterprise (6–12 months)
+   - Multi-tenant, regional data residency, SSO, audit trails.
+   - Formal model governance: versioning, A/B evaluation, fairness reviews.
+
+================================================================================
+END
+================================================================================

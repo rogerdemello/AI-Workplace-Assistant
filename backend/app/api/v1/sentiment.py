@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Literal, Optional
 import logging
 from sqlalchemy.orm import Session
 
@@ -29,6 +29,15 @@ class SentimentResponse(BaseModel):
     sentiment: str
     score: float
     text: str
+    source: Optional[Literal["lexicon", "llm", "hybrid"]] = None
+
+
+class EmotionTagResponse(BaseModel):
+    emotion: str
+    secondary_emotions: List[str]
+    confidence: float
+    sentiment: str
+    score: float
 
 
 class SentimentTrendResponse(BaseModel):
@@ -73,6 +82,20 @@ def analyze_sentiment(
         )
     
     return SentimentResponse(**result)
+
+
+@router.post("/emotion-tag", response_model=EmotionTagResponse)
+def tag_emotion(
+    request: SentimentRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Tag emotional tone for a text, useful for proactive nudges and dashboard signals.
+    """
+    service = SentimentService()
+    result = service.detect_emotion(request.text)
+    logger.info(f"Emotion tag for user {current_user.id}: {result['emotion']}")
+    return EmotionTagResponse(**result)
 
 
 @router.post("/analyze/batch")

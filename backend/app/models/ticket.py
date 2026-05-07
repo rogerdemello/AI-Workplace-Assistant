@@ -63,6 +63,7 @@ class TicketMessage(Base):
     ticket_id = Column(UUID(as_uuid=True), ForeignKey("tickets.id"), nullable=False, index=True)
     sender_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     message_text = Column(Text, nullable=False)
+    is_internal = Column(Integer, default=0, nullable=False, index=True)  # 1 = HR-only note
     created_at = Column(DateTime, default=utcnow_naive, index=True)
 
     ticket = relationship("Ticket", back_populates="messages")

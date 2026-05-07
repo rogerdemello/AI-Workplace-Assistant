@@ -51,3 +51,17 @@ def test_sentiment_trend_with_no_messages_returns_neutral_baseline(client, auth_
     assert data["total_analyses"] == 0
     assert data["average_sentiment"] == 0.0
     assert data["neutral_percentage"] == 100.0
+
+
+def test_emotion_tag_detects_stress_signal(client, auth_headers):
+    response = client.post(
+        "/api/v1/sentiment/emotion-tag",
+        headers=auth_headers,
+        json={"text": "I feel overwhelmed and exhausted today"},
+    )
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["emotion"] in {"stress", "frustration"}
+    assert data["sentiment"] in {"negative", "neutral"}
+    assert 0.0 <= data["confidence"] <= 1.0
+    assert "secondary_emotions" in data

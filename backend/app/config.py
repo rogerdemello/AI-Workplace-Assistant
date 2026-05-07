@@ -22,6 +22,59 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_ID: str = ""
     MICROSOFT_CLIENT_SECRET: str = ""
     VITE_API_URL: str = "http://localhost:8000"
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+    SMTP_USE_TLS: bool = True
+    ENABLE_WHATSAPP_CHANNEL: bool = False
+    ENABLE_LIFE_ASSISTANT: bool = False
+    ENABLE_PRODUCTIVITY_AGENT: bool = False
+    ENABLE_MULTI_AGENT_ORCHESTRATION: bool = False
+    WHATSAPP_VERIFY_TOKEN: str = ""
+    WHATSAPP_DEFAULT_USER_EMAIL: str = "employee1@infeedo.ai"
+    WHATSAPP_USER_MAP: str = ""
+    ENABLE_WHATSAPP_OUTBOUND: bool = False
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_WHATSAPP_FROM: str = ""
+    LIFE_WEATHER_BASE_URL: str = "https://api.open-meteo.com/v1/forecast"
+    LIFE_GEOCODE_BASE_URL: str = "https://geocoding-api.open-meteo.com/v1/search"
+    LIFE_PLACES_API_URL: str = ""
+    LIFE_PLACES_API_KEY: str = ""
+    LIFE_CAFETERIA_MENU_JSON: str = ""
+    # When true, skips heavy paths (lexicon-only sentiment in chat, fewer DB writes in tests).
+    FAST_CHAT_MODE: bool = False
+    # Chat API: use lexicon-only for synchronous sentiment (avoids hybrid LLM latency per turn).
+    CHAT_SYNC_LEXICON_SENTIMENT: bool = True
+    # Skip orchestrator intelligence LLM snapshot (saves one model call per message when MARK pipeline is on).
+    CHAT_SKIP_INTELLIGENCE_SNAPSHOT: bool = True
+    # Run wellbeing / memory side-effects after the HTTP response (faster TTFB on POST /chat/message).
+    CHAT_DEFER_NONBLOCKING_SIDE_EFFECTS: bool = True
+    SENTIMENT_STALE_DAYS: int = 7
+    # Sustained negative sentiment: alert HR after N negative logs within a rolling window (not single-turn spikes).
+    SUSTAINED_NEGATIVE_WINDOW_DAYS: int = 7
+    SUSTAINED_NEGATIVE_MIN_MESSAGES: int = 3
+    SUSTAINED_RISK_ALERT_COOLDOWN_HOURS: int = 24
+    SUSTAINED_RISK_ALERTS_ENABLED: bool = True
+    # Hybrid sentiment: Azure chat JSON classifier first, lexicon fallback (see sentiment_llm.py).
+    SENTIMENT_HYBRID_ENABLED: bool = True
+    SENTIMENT_LLM_MAX_CHARS: int = 2000
+    SENTIMENT_LLM_TIMEOUT_SECONDS: float = 12.0
+    # When LLM and lexicon disagree (label or large score gap), blend scores with this LLM weight.
+    SENTIMENT_BLEND_ON_DISAGREEMENT: bool = True
+    SENTIMENT_BLEND_SCORE_GAP_THRESHOLD: float = 0.45
+    SENTIMENT_BLEND_LLM_WEIGHT: float = 0.55
+    # Employee-level score: blend last N message scores (0–100) into rolling aggregate (0 disables).
+    SENTIMENT_ROLLING_TURNS: int = 5
+    SENTIMENT_ROLLING_BLEND_WEIGHT: float = 0.25
+    # Enhanced sentiment: context-aware, sarcasm detection, improved emotion detection
+    USE_ENHANCED_SENTIMENT: bool = True
+    # MARK intelligence — orchestrator LLM/lexicon snapshot → sentiment_logs + employee_scores
+    ENABLE_MARK_INTELLIGENCE_PIPELINE: bool = True
+    INTELLIGENCE_USE_LLM: bool = True
+    INTELLIGENCE_ASYNC_QUEUE_ENABLED: bool = False
 
     SUPABASE_URL: Optional[str] = None
     SUPABASE_SERVICE_KEY: Optional[str] = None

@@ -35,6 +35,9 @@ WEBHOOK_EVENT_DESCRIPTIONS = {
     "engagement_low": "When employee engagement is low",
     "buddy_assigned": "When onboarding buddy is assigned",
     "survey_completed": "When survey is completed",
+    "email_draft_created": "When an email draft is generated",
+    "email_sent": "When an email is successfully sent",
+    "email_received": "When inbound mailbox webhook receives an email",
 }
 
 

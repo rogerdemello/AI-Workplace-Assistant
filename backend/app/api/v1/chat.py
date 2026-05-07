@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
+import json
 
 from ...database import get_db
 from ...core.feature_flags import get_feature_flags
@@ -21,6 +23,7 @@ from ...schemas.chat import (
     ChatRequest,
     ChatResponse,
     ConversationStartResponse,
+    FlowMetadata,
     MessageSender,
 )
 from ...models.conversation import (
@@ -34,14 +37,58 @@ from ...services.chat import ChatService
 from ...services.memory_filters import should_store_memory
 from ...services.memory_service import get_memory_service
 from ...services.mark_proactive import get_mark_proactive_service
+from ...services.proactive_opening import build_proactive_chat_opening
 from ...services.smart_chat import get_smart_chat_service
 from ...services.sentiment import SentimentService
+from ...services.sentiment_pipeline import SentimentPipelineService
 from ...services.mental_health import check_and_alert_mental_health
-from ...services.engagement_score import EngagementScore
+from ...services.hr_personality import detect_conversation_mode
+from ...services.chat_optimizations import sync_chat_sentiment_label_score
+from ...config import settings
 import logging
+import os
+import time
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
+CHAT_STREAM_TIMEOUT_MS = max(3000, int(os.getenv("CHAT_STREAM_TIMEOUT_MS", "12000")))
+
+
+def _should_persist_sentiment_pipeline(_intelligence_snapshot: Optional[dict[str, Any]]) -> bool:
+    """Always persist per-message sentiment + employee aggregates for HR dashboards."""
+    return True
+
+
+def _run_sentiment_pipeline_for_user_message(
+    db: Session,
+    *,
+    employee_id: UUID,
+    user_message: Optional[ConversationMessage],
+    message_text: str,
+    sentiment_label: str,
+    sentiment_score: float,
+    intelligence_snapshot: Optional[dict[str, Any]] = None,
+    conversation_id: Optional[UUID] = None,
+) -> None:
+    """Updates sentiment_logs + employee_score so HR dashboards reflect chat tone."""
+    if user_message is None:
+        return
+    try:
+        SentimentPipelineService(db).process_message(
+            employee_id=employee_id,
+            message_id=user_message.id,
+            message_text=message_text,
+            sentiment_label=sentiment_label,
+            sentiment_score=sentiment_score,
+            intelligence_snapshot=intelligence_snapshot,
+            conversation_id=conversation_id,
+        )
+    except Exception:
+        logger.warning("Sentiment pipeline update skipped", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -60,6 +107,7 @@ class UnifiedChatResponse(BaseModel):
     conversation_id: str
     conversation_state: Optional[dict] = None
     context: Optional[dict] = None
+    flow_metadata: Optional[FlowMetadata] = None
     active_flow: Optional[str] = None
     last_intent: Optional[str] = None
     completed: bool = False
@@ -68,6 +116,7 @@ class UnifiedChatResponse(BaseModel):
 @router.post("/message", response_model=UnifiedChatResponse)
 def unified_chat_message(
     request: UnifiedChatRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -93,10 +142,14 @@ def unified_chat_message(
     if conversation_id:
         conv = chat_service.get_conversation(conversation_id, current_user.id)
         if not conv:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Conversation not found",
+            # Stale client id (reseed, new device) — start fresh instead of hard 404
+            logger.warning(
+                "Unknown conversation_id=%s for user=%s; creating a new conversation",
+                conversation_id,
+                current_user.id,
             )
+            conv = chat_service.create_conversation(current_user.id)
+            conversation_id = conv.id
     else:
         conv = chat_service.create_conversation(current_user.id)
         conversation_id = conv.id
@@ -118,45 +171,43 @@ def unified_chat_message(
         )
 
     try:
-        sentiment_result = SentimentService(db).analyze(request.message)
-        sentiment_label = sentiment_result.get("sentiment", "neutral")
-        sentiment_score = sentiment_result.get("score", 0.0)
+        se = SentimentService(db)
+        sentiment_label, sentiment_score = sync_chat_sentiment_label_score(se, request.message)
     except Exception:
         logger.warning("Sentiment analysis failed", exc_info=True)
         sentiment_label = result.get("sentiment", "neutral")
         sentiment_score = 0.0
 
-    try:
-        EngagementScore(db).calculate_user_engagement(current_user.id, days=30)
-    except Exception:
-        logger.warning("Engagement score calculation skipped", exc_info=True)
+    intel = smart_service.flow_context.pop("_intelligence_sentiment", None)
+    if intel:
+        sentiment_label = str(intel.get("label", sentiment_label))
+        s0 = int(intel.get("score_0_100", 50))
+        sentiment_score = max(-1.0, min(1.0, (s0 - 50) / 50.0))
 
-    # ── Step 9: persist both messages ─────────────────────────────────────
+    # ── Step 9: persist both messages (single commit) ─────────────────────
     try:
-        chat_service.add_message(
-            conversation_id=conversation_id,
-            message_text=request.message,
-            sender=MessageSender.user,
-            sentiment=sentiment_label,
-        )
-        chat_service.add_message(
-            conversation_id=conversation_id,
-            message_text=result["response"],
-            sender=MessageSender.bot,
+        user_message, _bot_msg = chat_service.add_user_and_bot_message_pair(
+            conversation_id,
+            user_text=request.message,
+            user_sentiment=sentiment_label,
+            bot_text=result["response"],
         )
     except Exception:
         logger.warning("Failed to persist messages", exc_info=True)
+        user_message = None
 
-    # ── Step 10: log sentiment ─────────────────────────────────────────────
-    try:
-        # SentimentService.log() persists a sentiment_logs row for analytics
-        SentimentService(db).log_sentiment(
-            user_id=current_user.id,
-            text=request.message,
-            sentiment=sentiment_label,
+    # ── Sentiment pipeline → sentiment_logs + employee_scores (HR dashboard) ──
+    if _should_persist_sentiment_pipeline(intel):
+        _run_sentiment_pipeline_for_user_message(
+            db,
+            employee_id=current_user.id,
+            user_message=user_message,
+            message_text=request.message,
+            sentiment_label=str(sentiment_label),
+            sentiment_score=float(sentiment_score or 0.0),
+            intelligence_snapshot=intel,
+            conversation_id=conversation_id,
         )
-    except Exception:
-        logger.warning("Sentiment logging skipped", exc_info=True)
 
     try:
         event_bus.publish(
@@ -183,43 +234,54 @@ def unified_chat_message(
     except Exception:
         logger.warning("Event publish skipped", exc_info=True)
 
-    # ── Capture wellbeing signal ──────────────────────────────────────────
-    if get_feature_flags().enable_proactive:
+    intent_guess = result.get("intent") or "general_query"
+    if settings.CHAT_DEFER_NONBLOCKING_SIDE_EFFECTS:
+        background_tasks.add_task(
+            _defer_chat_nonblocking_side_effects,
+            employee_id=current_user.id,
+            conversation_id=conversation_id,
+            message_text=request.message,
+            sentiment_score=sentiment_score,
+            intent=intent_guess,
+            sentiment_label=str(sentiment_label),
+        )
+    else:
+        if get_feature_flags().enable_proactive:
+            try:
+                get_mark_proactive_service(db=db).capture_chat_signal(
+                    user_id=current_user.id,
+                    conversation_id=conversation_id,
+                    text=request.message,
+                    source="chat",
+                    sentiment_score_override=sentiment_score,
+                )
+            except Exception:
+                logger.warning("Wellbeing signal capture skipped", exc_info=True)
+
         try:
-            get_mark_proactive_service(db=db).capture_chat_signal(
+            check_and_alert_mental_health(db, current_user.id)
+        except Exception:
+            logger.warning("Mental health check skipped", exc_info=True)
+
+        try:
+            _store_memory_hint(
+                db=db,
                 user_id=current_user.id,
-                conversation_id=conversation_id,
-                text=request.message,
-                source="chat",
-                sentiment_score_override=sentiment_score,
+                user_message=request.message,
+                intent=intent_guess,
+                sentiment=sentiment_label,
             )
         except Exception:
-            logger.warning("Wellbeing signal capture skipped", exc_info=True)
-
-    try:
-        check_and_alert_mental_health(db, current_user.id)
-    except Exception:
-        logger.warning("Mental health check skipped", exc_info=True)
-
-    # ── Memory hint ─────────────────────────────────────────────────────
-    try:
-        _store_memory_hint(
-            db=db,
-            user_id=current_user.id,
-            user_message=request.message,
-            intent=result.get("intent") or "general_query",
-            sentiment=result.get("sentiment"),
-        )
-    except Exception:
-        logger.warning("Memory hint skipped", exc_info=True)
+            logger.warning("Memory hint skipped", exc_info=True)
 
     return UnifiedChatResponse(
         response=result["response"],
         intent=result.get("intent"),
-        sentiment=result.get("sentiment"),
+        sentiment=str(sentiment_label),
         conversation_id=str(conversation_id),
         conversation_state={"state": result.get("conversation_state")},
         context=result.get("context"),
+        flow_metadata=result.get("flow_metadata"),
         active_flow=result.get("context", {}).get("active_flow"),
         last_intent=result.get("intent"),
         completed=smart_service.flow_context.get("state_contract", {}).get("completed", False),
@@ -320,6 +382,49 @@ def _memory_cards_for_user(db: Session, user_id: UUID, limit: int = 3) -> List[M
     return cards
 
 
+def _defer_chat_nonblocking_side_effects(
+    *,
+    employee_id: UUID,
+    conversation_id: UUID,
+    message_text: str,
+    sentiment_score: float,
+    intent: str,
+    sentiment_label: str,
+) -> None:
+    """Runs after HTTP response — own DB session; must not touch request-scoped `db`."""
+    from ...database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        if get_feature_flags().enable_proactive:
+            try:
+                get_mark_proactive_service(db=db).capture_chat_signal(
+                    user_id=employee_id,
+                    conversation_id=conversation_id,
+                    text=message_text,
+                    source="chat",
+                    sentiment_score_override=sentiment_score,
+                )
+            except Exception:
+                logger.warning("Deferred wellbeing capture skipped", exc_info=True)
+        try:
+            check_and_alert_mental_health(db, employee_id)
+        except Exception:
+            logger.warning("Deferred mental health check skipped", exc_info=True)
+        try:
+            _store_memory_hint(
+                db=db,
+                user_id=employee_id,
+                user_message=message_text,
+                intent=intent,
+                sentiment=sentiment_label,
+            )
+        except Exception:
+            logger.warning("Deferred memory hint skipped", exc_info=True)
+    finally:
+        db.close()
+
+
 def get_chat_service(db: Session = Depends(get_db)) -> ChatService:
     return ChatService(db)
 
@@ -388,13 +493,26 @@ def add_message(
 
     sentiment_label = None
     sentiment_score = None
+    intelligence_snapshot: Optional[dict[str, Any]] = None
     if message.sender == MessageSender.user:
         try:
-            sentiment_result = SentimentService(db).analyze(message.message_text)
-            sentiment_label = sentiment_result.get("sentiment")
-            sentiment_score = sentiment_result.get("score")
+            se = SentimentService(db)
+            sentiment_label, sentiment_score = sync_chat_sentiment_label_score(se, message.message_text)
         except Exception:
             logger.warning("Sentiment analysis failed", exc_info=True)
+
+        intelligence_snapshot = None
+        if getattr(settings, "ENABLE_MARK_INTELLIGENCE_PIPELINE", False) and not settings.CHAT_SKIP_INTELLIGENCE_SNAPSHOT:
+            try:
+                from ...services.intelligence.sentiment_service import analyze_user_message_intelligence
+
+                intelligence_snapshot = analyze_user_message_intelligence(message.message_text)
+            except Exception:
+                logger.warning("Intelligence sentiment snapshot skipped", exc_info=True)
+        if intelligence_snapshot:
+            sentiment_label = str(intelligence_snapshot.get("label", sentiment_label or "neutral"))
+            s0 = int(intelligence_snapshot.get("score_0_100", 50))
+            sentiment_score = max(-1.0, min(1.0, (s0 - 50) / 50.0))
 
     msg = service.add_message(
         conversation_id=conversation_id,
@@ -404,14 +522,17 @@ def add_message(
     )
 
     if message.sender == MessageSender.user:
-        try:
-            SentimentService(service.db).log_sentiment(
-                user_id=current_user.id,
-                text=message.message_text,
-                sentiment=sentiment_label or "neutral",
+        if _should_persist_sentiment_pipeline(intelligence_snapshot):
+            _run_sentiment_pipeline_for_user_message(
+                db,
+                employee_id=current_user.id,
+                user_message=msg,
+                message_text=message.message_text,
+                sentiment_label=str(sentiment_label or "neutral"),
+                sentiment_score=float(sentiment_score if sentiment_score is not None else 0.0),
+                intelligence_snapshot=intelligence_snapshot,
+                conversation_id=conversation_id,
             )
-        except Exception:
-            logger.warning("Sentiment logging skipped", exc_info=True)
 
         try:
             get_mark_proactive_service(db=service.db).capture_chat_signal(
@@ -450,8 +571,37 @@ def close_conversation(
 def respond_to_message(
     conversation_id: UUID,
     request: ChatRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
+):
+    result, smart_service = _process_conversation_message(
+        db=db,
+        current_user=current_user,
+        conversation_id=conversation_id,
+        message=request.message,
+        background_tasks=background_tasks,
+    )
+    return ChatResponse(
+        response=result["response"],
+        intent=result.get("intent"),
+        sentiment=result.get("sentiment"),
+        conversation_state={"state": result.get("conversation_state")},
+        context=result.get("context"),
+        flow_metadata=result.get("flow_metadata"),
+        active_flow=result.get("context", {}).get("active_flow"),
+        last_intent=result.get("intent"),
+        completed=smart_service.flow_context.get("state_contract", {}).get("completed", False),
+    )
+
+
+def _process_conversation_message(
+    *,
+    db: Session,
+    current_user: User,
+    conversation_id: UUID,
+    message: str,
+    background_tasks: Optional[BackgroundTasks] = None,
 ):
     conversation = ChatService(db).get_conversation(conversation_id, current_user.id)
     if not conversation:
@@ -465,88 +615,251 @@ def respond_to_message(
             db=db,
             user_id=current_user.id,
             use_mock=False,
-            conversation_id=conversation_id
+            conversation_id=conversation_id,
         )
-        result = smart_service.process_message(request.message)
+        result = smart_service.process_message(message)
 
         try:
-            sentiment_result = SentimentService(db).analyze(request.message)
-            sentiment_label = sentiment_result.get("sentiment", "neutral")
-            sentiment_score = sentiment_result.get("score", 0.0)
+            se = SentimentService(db)
+            sentiment_label, sentiment_score = sync_chat_sentiment_label_score(se, message)
         except Exception:
             sentiment_label = result.get("sentiment", "neutral")
             sentiment_score = 0.0
 
-        try:
-            EngagementScore(db).calculate_user_engagement(current_user.id, days=30)
-        except Exception:
-            logger.warning("Engagement score calculation skipped", exc_info=True)
+        intel = smart_service.flow_context.pop("_intelligence_sentiment", None)
+        if intel:
+            sentiment_label = str(intel.get("label", sentiment_label))
+            s0 = int(intel.get("score_0_100", 50))
+            sentiment_score = max(-1.0, min(1.0, (s0 - 50) / 50.0))
 
-        ChatService(db).add_message(
-            conversation_id=conversation_id,
-            message_text=request.message,
-            sender=MessageSender.user,
-            sentiment=sentiment_label,
+        chat_svc = ChatService(db)
+        user_message, _bot = chat_svc.add_user_and_bot_message_pair(
+            conversation_id,
+            user_text=message,
+            user_sentiment=str(sentiment_label),
+            bot_text=result["response"],
         )
-
-        try:
-            SentimentService(db).log_sentiment(
-                user_id=current_user.id,
-                text=request.message,
-                sentiment=sentiment_label,
-            )
-        except Exception:
-            logger.warning("Sentiment logging skipped", exc_info=True)
-
-        try:
-            get_mark_proactive_service(db=db).capture_chat_signal(
-                user_id=current_user.id,
+        if _should_persist_sentiment_pipeline(intel):
+            _run_sentiment_pipeline_for_user_message(
+                db,
+                employee_id=current_user.id,
+                user_message=user_message,
+                message_text=message,
+                sentiment_label=str(sentiment_label),
+                sentiment_score=float(sentiment_score or 0.0),
+                intelligence_snapshot=intel,
                 conversation_id=conversation_id,
-                text=request.message,
-                source="chat",
-                sentiment_score_override=sentiment_score,
             )
-        except Exception:
-            logger.warning("Failed to capture respond() wellbeing signal", exc_info=True)
 
-        try:
-            check_and_alert_mental_health(db, current_user.id)
-        except Exception:
-            logger.warning("Mental health check skipped", exc_info=True)
-
-        ChatService(db).add_message(
-            conversation_id=conversation_id,
-            message_text=result["response"],
-            sender=MessageSender.bot
-        )
-
-        try:
-            _store_memory_hint(
-                db=db,
-                user_id=current_user.id,
-                user_message=request.message,
-                intent=result.get("intent") or "general_query",
-                sentiment=result.get("sentiment"),
+        intent_guess = result.get("intent") or "general_query"
+        if background_tasks is not None and settings.CHAT_DEFER_NONBLOCKING_SIDE_EFFECTS:
+            background_tasks.add_task(
+                _defer_chat_nonblocking_side_effects,
+                employee_id=current_user.id,
+                conversation_id=conversation_id,
+                message_text=message,
+                sentiment_score=sentiment_score,
+                intent=intent_guess,
+                sentiment_label=str(sentiment_label),
             )
-        except Exception:
-            logger.warning("Memory hint capture skipped", exc_info=True)
+        else:
+            try:
+                get_mark_proactive_service(db=db).capture_chat_signal(
+                    user_id=current_user.id,
+                    conversation_id=conversation_id,
+                    text=message,
+                    source="chat",
+                    sentiment_score_override=sentiment_score,
+                )
+            except Exception:
+                logger.warning("Failed to capture respond() wellbeing signal", exc_info=True)
 
-        return ChatResponse(
-            response=result["response"],
-            intent=result.get("intent"),
-            sentiment=result.get("sentiment"),
-            conversation_state={"state": result.get("conversation_state")},
-            context=result.get("context"),
-            active_flow=result.get("context", {}).get("active_flow"),
-            last_intent=result.get("intent"),
-            completed=smart_service.flow_context.get("state_contract", {}).get("completed", False),
-        )
+            try:
+                check_and_alert_mental_health(db, current_user.id)
+            except Exception:
+                logger.warning("Mental health check skipped", exc_info=True)
+
+            try:
+                _store_memory_hint(
+                    db=db,
+                    user_id=current_user.id,
+                    user_message=message,
+                    intent=intent_guess,
+                    sentiment=sentiment_label,
+                )
+            except Exception:
+                logger.warning("Memory hint capture skipped", exc_info=True)
+
+        return result, smart_service
     except Exception as e:
         logger.error(f"Error processing message: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="I'm having trouble responding right now. Please try again in a moment."
+            detail="I'm having trouble responding right now. Please try again in a moment.",
         )
+
+
+@router.post("/conversations/{conversation_id}/respond/stream")
+def stream_respond_to_message(
+    conversation_id: UUID,
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conversation = ChatService(db).get_conversation(conversation_id, current_user.id)
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+
+    smart_service = get_smart_chat_service(
+        db=db,
+        user_id=current_user.id,
+        use_mock=False,
+        conversation_id=conversation_id,
+    )
+    classified = smart_service.intent_classifier.classify(request.message, str(current_user.id))
+    intent = smart_service._apply_intent_keyword_fallback(classified.get("intent", "general_query"), request.message)
+    # Align with ConversationOrchestrator: phrase keywords must override the classifier (e.g. "apply leave").
+    strong = smart_service._detect_strong_intent(request.message)
+    if strong:
+        intent = strong
+
+    def _event(event_type: str, payload: dict) -> str:
+        return f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
+
+    streamable_non_flow_intents = {"general_query", "help_request", "email_draft", "policy_query", "benefits_question"}
+    has_active_flow = bool(smart_service.current_flow)
+
+    if intent not in streamable_non_flow_intents or has_active_flow:
+        result, processed_service = _process_conversation_message(
+            db=db,
+            current_user=current_user,
+            conversation_id=conversation_id,
+            message=request.message,
+            background_tasks=background_tasks,
+        )
+        response_text = result.get("response") or ""
+        metadata_payload = {
+            "intent": result.get("intent"),
+            "sentiment": result.get("sentiment"),
+            "conversation_state": {"state": result.get("conversation_state")},
+            "context": result.get("context"),
+            "flow_metadata": result.get("flow_metadata"),
+            "active_flow": result.get("context", {}).get("active_flow"),
+            "last_intent": result.get("intent"),
+            "completed": processed_service.flow_context.get("state_contract", {}).get("completed", False),
+        }
+
+        def event_stream_flow():
+            yield _event("meta", {"conversation_id": str(conversation_id)})
+            # Flow responses are deterministic (state-machine/templates);
+            # fake word-by-word streaming adds latency without value.
+            # Send the complete response immediately for better perceived speed.
+            yield _event("token", {"text": response_text})
+            yield _event("done", {"response": response_text, **metadata_payload})
+
+        return StreamingResponse(event_stream_flow(), media_type="text/event-stream")
+
+    try:
+        se = SentimentService(db)
+        sentiment, sentiment_score = sync_chat_sentiment_label_score(se, request.message)
+    except Exception:
+        sentiment = "neutral"
+        sentiment_score = 0.0
+
+    intel_stream: Optional[dict[str, Any]] = None
+    if settings.ENABLE_MARK_INTELLIGENCE_PIPELINE and not settings.CHAT_SKIP_INTELLIGENCE_SNAPSHOT:
+        from ...services.intelligence.sentiment_service import analyze_user_message_intelligence
+
+        intel_stream = analyze_user_message_intelligence(request.message)
+        if intel_stream:
+            sentiment = str(intel_stream.get("label", sentiment))
+            s0 = int(intel_stream.get("score_0_100", 50))
+            sentiment_score = max(-1.0, min(1.0, (s0 - 50) / 50.0))
+
+    mode = detect_conversation_mode(request.message, sentiment)
+
+    def event_stream_general():
+        yield _event("meta", {"conversation_id": str(conversation_id)})
+        accumulated = ""
+        stream_started = time.monotonic()
+        try:
+            for token in smart_service.stream_non_flow_intent_tokens(
+                intent=intent,
+                message=request.message,
+                sentiment=sentiment,
+                mode=mode,
+            ):
+                if not token:
+                    continue
+                accumulated += token
+                yield _event("token", {"text": accumulated})
+                if (time.monotonic() - stream_started) * 1000 >= CHAT_STREAM_TIMEOUT_MS:
+                    raise TimeoutError("stream token timeout")
+        except Exception:
+            logger.warning("Token stream failed/timed out, reverting to buffered response", exc_info=True)
+            if intent in {"policy_query", "benefits_question"}:
+                buffered = smart_service._handle_policy_query(request.message)
+            else:
+                buffered = smart_service._handle_general_query(request.message, sentiment=sentiment, mode=mode)
+            accumulated = buffered
+            yield _event("token", {"text": accumulated})
+
+        final_response = smart_service._finalize_response(
+            accumulated,
+            intent=intent,
+            sentiment=sentiment,
+            mode=mode,
+            source_message=request.message,
+        )
+
+        chat_stream = ChatService(db)
+        user_msg, _bot_stream = chat_stream.add_user_and_bot_message_pair(
+            conversation_id,
+            user_text=request.message,
+            user_sentiment=str(sentiment),
+            bot_text=final_response,
+        )
+        if _should_persist_sentiment_pipeline(intel_stream):
+            _run_sentiment_pipeline_for_user_message(
+                db,
+                employee_id=current_user.id,
+                user_message=user_msg,
+                message_text=request.message,
+                sentiment_label=str(sentiment),
+                sentiment_score=sentiment_score,
+                intelligence_snapshot=intel_stream,
+                conversation_id=conversation_id,
+            )
+        if settings.CHAT_DEFER_NONBLOCKING_SIDE_EFFECTS:
+            background_tasks.add_task(
+                _defer_chat_nonblocking_side_effects,
+                employee_id=current_user.id,
+                conversation_id=conversation_id,
+                message_text=request.message,
+                sentiment_score=sentiment_score,
+                intent=intent,
+                sentiment_label=str(sentiment),
+            )
+        yield _event(
+            "done",
+            {
+                "response": final_response,
+                "intent": intent,
+                "sentiment": sentiment,
+                "conversation_state": {"state": "active"},
+                "context": smart_service.user_context,
+                "flow_metadata": None,
+                "active_flow": None,
+                "last_intent": intent,
+                "completed": False,
+            },
+        )
+
+    return StreamingResponse(event_stream_general(), media_type="text/event-stream")
 
 
 @router.post("/conversations/start", response_model=ConversationStartResponse)
@@ -555,29 +868,22 @@ def start_conversation(
     db: Session = Depends(get_db)
 ):
     conversation = ChatService(db).create_conversation(current_user.id)
-    
+
     try:
-        smart_service = get_smart_chat_service(
-            db=db,
-            user_id=current_user.id,
-            use_mock=False,
-            conversation_id=conversation.id
-        )
-        result = smart_service.process_message("hello")
-        greeting = result.get("response", "Hey, I'm Mark. How are you doing today?")
+        greeting = build_proactive_chat_opening(db, current_user)
     except Exception as e:
-        logger.warning(f"Failed to generate greeting: {e}")
-        greeting = "Hey, I'm Mark. How are you doing today?"
-    
+        logger.warning("Failed to build proactive greeting: %s", e)
+        greeting = "Hey — I'm Mark. What's on your mind today?"
+
     ChatService(db).add_message(
         conversation_id=conversation.id,
         message_text=greeting,
-        sender=MessageSender.bot
+        sender=MessageSender.bot,
     )
-    
+
     return ConversationStartResponse(
         conversation_id=conversation.id,
-        greeting=greeting
+        greeting=greeting,
     )
 
 

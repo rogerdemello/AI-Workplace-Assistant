@@ -298,6 +298,9 @@ def detect_conversation_mode(
     intent_value = (intent or "").lower()
     sentiment_value = (sentiment or "").lower()
 
+    if intent_value == "resignation_support":
+        return "support"
+
     support_markers = [
         "stressed", "overwhelmed", "burnout", "anxious", "frustrated",
         "unfair", "not okay", "tough", "exhausted", "upset", "angry",

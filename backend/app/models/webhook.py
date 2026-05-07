@@ -29,6 +29,9 @@ class WebhookEventType(str, enum.Enum):
     ENGAGEMENT_LOW = "engagement_low"
     BUDDY_ASSIGNED = "buddy_assigned"
     SURVEY_COMPLETED = "survey_completed"
+    EMAIL_DRAFT_CREATED = "email_draft_created"
+    EMAIL_SENT = "email_sent"
+    EMAIL_RECEIVED = "email_received"
 
 
 class WebhookStatus(str, enum.Enum):

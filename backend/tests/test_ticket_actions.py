@@ -4,6 +4,8 @@ from uuid import UUID
 from fastapi import status
 
 from app.models.ticket import Ticket
+from app.models.action import HRAction
+from app.models.hr_notification import HrNotification
 
 
 def test_hr_can_assign_ticket(client, auth_headers, hr_auth_headers, hr_user, db):
@@ -83,3 +85,91 @@ def test_hr_can_enforce_sla_on_overdue_ticket(client, auth_headers, hr_auth_head
     assert enforce_resp.status_code == status.HTTP_200_OK
     payload = enforce_resp.json()
     assert payload["status"] == "escalated"
+
+
+def test_hr_can_manually_escalate_ticket(client, auth_headers, hr_auth_headers):
+    create_resp = client.post(
+        "/api/v1/tickets",
+        headers=auth_headers,
+        json={"query": "Manager conflict is escalating", "category": "complaint", "priority": "high"},
+    )
+    assert create_resp.status_code == status.HTTP_200_OK
+    ticket_id = create_resp.json()["id"]
+
+    escalate_resp = client.post(
+        f"/api/v1/tickets/{ticket_id}/escalate",
+        headers=hr_auth_headers,
+        json={"reason": "Escalated by HR panel"},
+    )
+    assert escalate_resp.status_code == status.HTTP_200_OK
+    payload = escalate_resp.json()
+    assert payload["status"] == "escalated"
+    assert payload["priority"] == "critical"
+
+
+def test_ticket_action_creates_hr_notification(client, auth_headers, hr_auth_headers, db):
+    create_resp = client.post(
+        "/api/v1/tickets",
+        headers=auth_headers,
+        json={"query": "Need urgent help", "category": "general", "priority": "medium"},
+    )
+    assert create_resp.status_code == status.HTTP_200_OK
+    ticket_id = create_resp.json()["id"]
+
+    escalate_resp = client.post(
+        f"/api/v1/tickets/{ticket_id}/escalate",
+        headers=hr_auth_headers,
+        json={"reason": "Escalated after SLA breach"},
+    )
+    assert escalate_resp.status_code == status.HTTP_200_OK
+
+    notif = (
+        db.query(HrNotification)
+        .filter(HrNotification.ticket_id == UUID(ticket_id), HrNotification.notification_type == "ticket_escalated")
+        .order_by(HrNotification.created_at.desc())
+        .first()
+    )
+    assert notif is not None
+    assert notif.severity == "high"
+
+
+def test_hr_can_schedule_checkin_from_ticket(client, auth_headers, hr_auth_headers, db):
+    create_resp = client.post(
+        "/api/v1/tickets",
+        headers=auth_headers,
+        json={"query": "Need manager support", "category": "complaint", "priority": "high"},
+    )
+    assert create_resp.status_code == status.HTTP_200_OK
+    ticket_id = create_resp.json()["id"]
+
+    schedule_resp = client.post(
+        f"/api/v1/tickets/{ticket_id}/schedule-checkin",
+        headers=hr_auth_headers,
+        json={"notes": "Set up check-in by Friday"},
+    )
+    assert schedule_resp.status_code == status.HTTP_200_OK
+    assert "Check-in scheduled" in schedule_resp.json()["detail"]
+
+    actions = db.query(HRAction).all()
+    assert len(actions) >= 1
+    assert actions[0].action_type == "schedule_checkin"
+
+
+def test_hr_can_close_ticket(client, auth_headers, hr_auth_headers):
+    create_resp = client.post(
+        "/api/v1/tickets",
+        headers=auth_headers,
+        json={"query": "Please resolve this issue", "category": "general", "priority": "medium"},
+    )
+    assert create_resp.status_code == status.HTTP_200_OK
+    ticket_id = create_resp.json()["id"]
+
+    close_resp = client.post(
+        f"/api/v1/tickets/{ticket_id}/close",
+        headers=hr_auth_headers,
+        json={"resolution_note": "Resolved by HR"},
+    )
+    assert close_resp.status_code == status.HTTP_200_OK
+    payload = close_resp.json()
+    assert payload["status"] == "resolved"
+    assert payload["resolved_at"] is not None

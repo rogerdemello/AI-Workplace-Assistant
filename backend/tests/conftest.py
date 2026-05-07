@@ -4,8 +4,7 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, String, UUID as SQLUUID
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import String, UUID as SQLUUID
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.types import TypeDecorator, CHAR
@@ -23,6 +22,8 @@ os.environ["SECRET_KEY"] = "test-secret-key"
 os.environ["ALGORITHM"] = "HS256"
 os.environ["REDIS_URL"] = "redis://localhost:6379"
 os.environ["TESTING"] = "1"
+os.environ["FAST_CHAT_MODE"] = "true"
+os.environ["CHAT_SKIP_INTELLIGENCE_SNAPSHOT"] = "false"
 
 
 class GUID(TypeDecorator):
@@ -60,18 +61,11 @@ def _compile_sql_uuid_for_sqlite(_type, _compiler, **_kwargs):
     return "CHAR(36)"
 
 
-DATABASE_URL = "sqlite:///./test.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
 @pytest.fixture(scope="function", autouse=True)
 def setup_test_db():
-    if engine is None:
-        pytest.skip("Database not available")
-    from app.database import Base
-    # Ensure all SQLAlchemy models are registered before metadata creation.
-    import app.models  # noqa: F401
+    """Use the same SQLAlchemy engine as the app so metadata and sessions stay aligned."""
+    from app.database import Base, engine
+    import app.models  # noqa: F401 — register all models on Base.metadata
     try:
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
@@ -93,7 +87,9 @@ def reset_rate_limiter_state():
 
 @pytest.fixture(scope="function")
 def db():
-    db_session = TestingSessionLocal()
+    from app.database import SessionLocal
+
+    db_session = SessionLocal()
     try:
         yield db_session
     finally:
@@ -156,6 +152,24 @@ def hr_user(db):
 
 
 @pytest.fixture
+def manager_user(db):
+    from app.models.user import User, UserRole, UserStatus
+    from app.auth import hash_password
+    user = User(
+        id=uuid.uuid4(),
+        email="manager@example.com",
+        name="Manager User",
+        hashed_password=hash_password("managerpass123"),
+        role=UserRole.manager,
+        status=UserStatus.active
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@pytest.fixture
 def admin_user(db):
     from app.models.user import User, UserRole, UserStatus
     from app.auth import hash_password
@@ -184,6 +198,13 @@ def auth_headers(test_user):
 def hr_auth_headers(hr_user):
     from app.auth import create_access_token
     token = create_access_token(data={"sub": str(hr_user.id), "role": hr_user.role.value})
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def manager_auth_headers(manager_user):
+    from app.auth import create_access_token
+    token = create_access_token(data={"sub": str(manager_user.id), "role": manager_user.role.value})
     return {"Authorization": f"Bearer {token}"}
 
 

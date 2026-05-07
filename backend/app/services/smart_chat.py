@@ -9,7 +9,7 @@ This service orchestrates:
 - RAG-based policy queries
 """
 
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Iterator
 from uuid import UUID
 from sqlalchemy.orm import Session
 import logging
@@ -22,6 +22,7 @@ from ..models.leave_request import LeaveRequest, LeaveStatus, LeaveType
 from ..models.ticket import Ticket, TicketPriority, TicketStatus
 from ..services.ticket import TicketService
 
+from ..config import settings
 from ..ai_client import get_ai_client, AzureOpenAIClient, MockAzureOpenAIClient
 from ..core.feature_flags import get_feature_flags
 from .intent_classifier import IntentClassifier, get_intent_classifier
@@ -42,6 +43,10 @@ from .entity_extractor import get_entity_extractor
 from .health_detector import detect_health_keywords
 
 logger = logging.getLogger(__name__)
+
+
+def _fast_chat_enabled() -> bool:
+    return bool(settings.FAST_CHAT_MODE)
 
 
 class SmartChatService:
@@ -105,6 +110,7 @@ class SmartChatService:
         "crying", "tears", "breakdown", "mental health", "therapy",
         "want to quit", "resign", "just quit", "had enough",
         "not okay", "not ok", "mentally", "emotional",
+        "need a break", "i need a break", "need some time",
     ]
     
     # FAQ for new hires
@@ -167,6 +173,15 @@ class SmartChatService:
     
     # Strong intent keywords that trigger flow switching when explicitly expressed
     STRONG_INTENT_KEYWORDS = {
+        # Resignation / leaving role (not annual-leave / PTO)
+        "leave the company": "resignation_support",
+        "leave my job": "resignation_support",
+        "quit my job": "resignation_support",
+        "want to resign": "resignation_support",
+        "want to quit": "resignation_support",
+        "hand in my notice": "resignation_support",
+        "give my notice": "resignation_support",
+        "put in my notice": "resignation_support",
         # Ticket / complaint
         "raise ticket": "ticket_create",
         "raise complaint": "ticket_create",
@@ -177,6 +192,9 @@ class SmartChatService:
         "ticket to hr": "ticket_create",
         "report issue": "ticket_create",
         "report a problem": "ticket_create",
+        "complaint about": "ticket_create",
+        "problem with my manager": "ticket_create",
+        "issue with my manager": "ticket_create",
         # Leave apply
         "leave request": "leave_request",
         "apply leave": "leave_request",
@@ -189,41 +207,27 @@ class SmartChatService:
         "how many leaves": "leave_balance",
         "leave balance": "leave_balance",
         "leaves left": "leave_balance",
+        "leaves remaining": "leave_balance",
+        "leave days left": "leave_balance",
         "how much leave": "leave_balance",
         "remaining leave": "leave_balance",
-        "leave days left": "leave_balance",
-        # Reminder / alarm
-        "set alarm": "reminder",
-        "set a reminder": "reminder",
-        "set reminder": "reminder",
-        "remind me": "reminder",
-        "create reminder": "reminder",
-        "schedule reminder": "reminder",
-        "add reminder": "reminder",
-        "help": "help_request",
-        "help me": "help_request",
-        "i need help": "help_request",
-        "can you help": "help_request",
-        "assist me": "help_request",
-        # Policy / benefits
-        "policy": "policy_query",
-        "handbook": "policy_query",
-        "benefits": "benefits_question",
-        # Escalation
-        "escalate": "escalate_ticket",
-        "escalation": "escalate_ticket",
-        "urgent": "escalate_ticket",
-        "supervisor": "escalate_ticket",
-        "higher up": "escalate_ticket",
-        "stressed": "emotional",
-        "overwhelmed": "emotional",
-        "anxious": "emotional",
-        "depressed": "emotional",
-        "burned out": "emotional",
-        "i feel": "emotional",
-        "mental health": "emotional",
-        "can't cope": "emotional",
-        "exhausted emotionally": "emotional",
+        "leave quota": "leave_balance",
+        # General conversation / context breakers (reset flow)
+        "tell me a joke": "general_query",
+        "joke": "general_query",
+        "something funny": "general_query",
+        "make me laugh": "general_query",
+        "funny": "general_query",
+        "weather": "general_query",
+        "news": "general_query",
+        "hi": "general_query",
+        "hello": "general_query",
+        "hey": "general_query",
+        "thanks": "general_query",
+        "thank you": "general_query",
+        "bye": "general_query",
+        "goodbye": "general_query",
+        "see you": "general_query",
     }
 
     # Mapping from intent to flow name (only intents that need a multi-step flow)
@@ -297,6 +301,24 @@ class SmartChatService:
         if not self.conversation_id:
             return
         try:
+            from datetime import date, datetime
+            from uuid import UUID as UUIDType
+
+            def _json_sanitize(obj: object) -> object:
+                if obj is None:
+                    return None
+                if isinstance(obj, UUIDType):
+                    return str(obj)
+                if isinstance(obj, (datetime, date)):
+                    return obj.isoformat()
+                if isinstance(obj, dict):
+                    return {str(k): _json_sanitize(v) for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)):
+                    return [_json_sanitize(x) for x in obj]
+                if isinstance(obj, (str, int, float, bool)):
+                    return obj
+                return str(obj)
+
             from ..models.conversation import Conversation
             conv = self.db.query(Conversation).filter(
                 Conversation.id == self.conversation_id
@@ -304,11 +326,12 @@ class SmartChatService:
             if conv:
                 conv.active_flow = self.current_flow
                 conv.last_intent = self.previous_intent
-                conv.state = dict(self.flow_context) if self.flow_context else {}
+                safe_ctx = _json_sanitize(self.flow_context) if self.flow_context else {}
+                conv.state = safe_ctx if isinstance(safe_ctx, dict) else {}
                 conv.last_question = self.flow_context.get("last_question")
                 contract = self.flow_context.get("state_contract", {})
                 conv.completed = bool(contract.get("completed", False))
-                conv.flow_data = json.dumps(self.flow_context)
+                conv.flow_data = json.dumps(safe_ctx if isinstance(safe_ctx, dict) else {})
                 self.db.commit()
         except Exception as e:
             logger.warning(f"Failed to save flow state: {e}")
@@ -325,11 +348,13 @@ class SmartChatService:
         if not msg:
             return classified_intent
 
+        # Reminder keywords — high confidence regardless of classified intent
+        if any(keyword in msg for keyword in ("set alarm", "set reminder", "remind me", "remind me to")):
+            return "reminder"
+
         if classified_intent in {"ticket_create", "complaint"}:
             if any(keyword in msg for keyword in self.LEAVE_BALANCE_KEYWORDS):
                 return "leave_balance"
-            if any(keyword in msg for keyword in ("set alarm", "set reminder", "remind me")):
-                return "reminder"
         return classified_intent
     
     def _is_greeting(self, message: str) -> bool:
@@ -376,16 +401,57 @@ class SmartChatService:
         """Handle greeting intents."""
         return get_conversation_starter(sentiment=sentiment, mode=mode)
 
-    def _handle_help_request(self) -> str:
-        return "Sure, I can help. What do you need assistance with?"
+    def _handle_help_request(self, message: str) -> str:
+        text = (message or "").lower()
+        if re.search(r"timesheet|time sheet|missing hours|submit hours|clock in|clock out", text):
+            return "Got it — is this about filling your timesheet, fixing missing hours, or submitting it?"
+        if re.search(r"email|mail|draft|write a note|recognition|appreciation", text):
+            return "Sure — who is this for, and should it sound formal or casual?"
+        if re.search(r"policy|leave policy|benefits|wfh|remote", text):
+            return "Got it — is this about leave, benefits, or remote-work policy?"
+        if re.search(r"ticket|complaint|issue|problem|manager", text):
+            return "Understood — want me to raise this to HR now, or add more detail first?"
+        return "Got it — do you want to complete a task, fix an issue, or ask a policy question?"
+
+    def _handle_resignation_support(self, message: str) -> str:
+        """Empathetic first response for someone considering leaving — not the same as booking PTO."""
+        return (
+            "I am really glad you said this here — that is a big thing to carry. "
+            "If you are set on moving on, HR can walk you through notice, handover, and benefits smoothly. "
+            "If something at work is pushing you to this, we can also help you talk it through or escalate safely. "
+            "What feels most useful right now: **steps to resign**, or **talking about what is going on** before you decide?"
+        )
+
+    def _build_intent_switch_ack(self, from_flow: str, to_intent: str) -> str:
+        from_label = from_flow.replace("_", " ")
+        to_label = to_intent.replace("_", " ")
+        return f"Got it, switching gears from {from_label} to {to_label}."
+
+    def _try_fast_intent_reply(self, message: str) -> Optional[str]:
+        """Short-circuit common phrasing without calling the general LLM (latency + consistency)."""
+        if not _fast_chat_enabled():
+            return None
+        if self.current_flow in {"ticket", "leave_request"}:
+            return None
+        m = (message or "").strip().lower()
+        if not m:
+            return None
+        if self._is_greeting(message) and len(m.split()) <= 4:
+            return None
+        if re.search(r"timesheet|time sheet|missing hours|submit hours|clock in|clock out", m):
+            return "Got it — are you trying to fill it, fix missing hours, or submit it?"
+        if re.search(r"appreciation|recognition|kudos|thank[- ]?you note|shout[- ]?out", m):
+            return "Nice — should this be formal or casual?"
+        if re.search(r"difficult 1:1|hard 1:1|tough conversation|difficult one[- ]on[- ]one|awkward 1:1", m):
+            return "That sounds tough. Want help structuring the conversation so it stays calm and clear?"
+        return None
 
     def _handle_emotional(self, message: str, sentiment: str) -> str:
         from .mental_health import create_risk_alert
 
         response = (
-            "I'm really sorry you're feeling this way. Your wellbeing matters, and I'm here to support you. "
-            f"If you'd like, you can reach out to our EAP hotline ({self.EAP_RESOURCES['hotline']}) — it's completely confidential. "
-            "Would you like me to share some wellbeing resources or suggest a quick check-in with someone from HR?"
+            "That sounds really tough. I'm here with you. "
+            "Want me to help you structure what to say, or should I raise this with HR?"
         )
 
         if sentiment == "negative":
@@ -466,6 +532,17 @@ class SmartChatService:
             elif ampm == "am" and h == 12:
                 h = 0
             hour, minute = h, m
+
+        # ── Auto-correct invalid times ──────────────────────────────
+        if minute > 59:
+            hour += minute // 60
+            minute = minute % 60
+        if hour > 23:
+            hour = hour % 24
+        if hour < 0:
+            hour = 0
+        if minute < 0:
+            minute = 0
 
         time_str = f"{hour:02d}:{minute:02d}"
 
@@ -596,8 +673,14 @@ class SmartChatService:
         if start < _date.today() - timedelta(days=1):
             return "Start dates can't be more than 1 day in the past. Please use today or a future date."
 
-        if (end - start).days + 1 > 60:
-            return "Leave requests can't exceed 60 days. Could you adjust the dates?"
+        days = (end - start).days + 1
+        if days > 60 and not self.flow_context.get("leave_long_duration_confirmed"):
+            self.flow_context["leave_long_duration_warning_shown"] = True
+            self.flow_context["last_question"] = "long_duration_warning"
+            return (
+                f"That's a {days}-day leave request. Long leaves usually need extra approval. "
+                "Are you sure you want to proceed?"
+            )
 
         overlap = self._check_leave_overlap(leave_data)
         if overlap:
@@ -610,34 +693,81 @@ class SmartChatService:
             logger.info(f"Backdated leave request from user {self.user_id}: {start} to {end}")
 
         leave_type = self._normalize_leave_type(leave_data.get("leave_type"))
-        days = (end - start).days + 1
 
-        try:
-            leave_request = LeaveRequest(
-                user_id=self.user_id,
-                start_date=start,
-                end_date=end,
-                leave_type=leave_type,
-                reason=leave_data.get("reason"),
-                status=LeaveStatus.pending,
-            )
-            self.db.add(leave_request)
-            self.db.commit()
-        except Exception as exc:
-            self.db.rollback()
-            logger.error(f"Leave creation failed: {exc}")
-            return "Something went wrong saving your leave request. Please try again."
+        leave_request = LeaveRequest(
+            user_id=self.user_id,
+            start_date=start,
+            end_date=end,
+            leave_type=leave_type,
+            reason=leave_data.get("reason"),
+            status=LeaveStatus.pending,
+        )
+        self.db.add(leave_request)
+
+        # Retry commit with exponential backoff for transient DB errors
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.db.commit()
+                break
+            except Exception as exc:
+                self.db.rollback()
+                if attempt < max_retries - 1:
+                    wait = 0.2 * (2 ** attempt)
+                    logger.warning(f"Leave commit failed (attempt {attempt + 1}), retrying in {wait}s: {exc}")
+                    import time
+                    time.sleep(wait)
+                else:
+                    logger.error(f"Leave creation failed after {max_retries} attempts: {exc}")
+                    return "Something went wrong saving your leave request. Please try again."
 
         self._reset_flow()
+        reason_text = leave_data.get("reason") or ""
+        empathy = ""
+        if any(k in reason_text.lower() for k in ("fever", "sick", "ill", "unwell", "flu", "cold", "not feeling")):
+            empathy = " Take care and get well soon. 🩹"
         return (
             f"Done! {days}-day {leave_type.value.replace('_', ' ')} leave from "
-            f"{start} to {end} submitted. Your manager will review it soon. 🗓️"
+            f"{start} to {end} submitted. Your manager will review it soon. 🗓️{empathy}"
         )
     
     def _handle_policy_query(self, message: str) -> str:
         """Handle policy query using RAG."""
         if not get_feature_flags().enable_rag:
-            return "Policy search is currently disabled by configuration."
+            return (
+                "Looks like policy search is off right now. "
+                "Tell me if it's leave, remote work, payroll, or benefits — I'll share the usual gist, or loop in HR."
+            )
+
+        if _fast_chat_enabled():
+            faq_hit = self.detect_faq(message)
+            if faq_hit:
+                return faq_hit
+            ml = (message or "").lower()
+            if any(k in ml for k in ("leave policy", "pto policy", "vacation policy", "how many leave")):
+                return (
+                    "Looks like I can't pull the handbook right now — generally, paid leave needs your manager's approval. "
+                    "Want HR to confirm the exact wording for you?"
+                )
+            if any(k in ml for k in ("remote", "wfh", "work from home", "hybrid")):
+                return (
+                    "I can't load the doc right now — most teams allow flexible WFH with your manager's alignment. "
+                    "Want me to flag HR to confirm your team's rule?"
+                )
+            if any(k in ml for k in ("payroll", "pay day", "payday", "salary")):
+                return (
+                    "Docs are slow to load — payroll dates depend on your payroll calendar (often mid-month and month-end). "
+                    "Want a quick HR ticket to confirm yours?"
+                )
+            if "benefit" in ml or "insurance" in ml or "401" in ml:
+                return (
+                    "I can't pull benefits text right now — your portal usually has the latest. "
+                    "Want me to connect you to HR for specifics?"
+                )
+            return (
+                "Looks like I can't pull that policy right now. "
+                "Tell me if it's about leave, remote work, payroll, or benefits — I'll give the usual gist, or loop in HR for the official line."
+            )
 
         try:
             result = RAGOrchestrator(self.db, use_mock=self.use_mock).ask(message)
@@ -697,12 +827,9 @@ class SmartChatService:
     
     def _handle_email_draft(self, message: str) -> str:
         """Handle email draft requests."""
-        # This would typically integrate with the email_draft service
-        # For now, provide a helpful response
-        return (
-            "I can draft that for you. "
-            "Who is the email for?"
-        )
+        if _fast_chat_enabled():
+            return "Got it — I'll shape this for your audience. Should the tone be formal or friendly?"
+        return "I can draft that for you. Who is the email for?"
 
     def _parse_yes_no(self, message: str) -> Optional[bool]:
         normalized = message.strip().lower().strip(".!,")
@@ -718,9 +845,9 @@ class SmartChatService:
         if normalized in no_values:
             return False
 
-        if "keep it anonymous" in normalized or "stay anonymous" in normalized:
+        if "keep it anonymous" in normalized or "stay anonymous" in normalized or normalized == "anonymous":
             return True
-        if "not anonymous" in normalized or "do not keep anonymous" in normalized:
+        if "not anonymous" in normalized or "do not keep anonymous" in normalized or normalized == "public":
             return False
 
         return None
@@ -731,16 +858,41 @@ class SmartChatService:
             return True
         return bool(re.search(r"manager|harass|issue|problem|unfair|frustrat|payroll|policy|ticket|complaint", text, re.IGNORECASE))
 
+    def _infer_ticket_severity(self, ticket_data: Dict) -> str:
+        """Classify severity from collected text and optional intelligence — not from a user pick-one step."""
+        blob = " ".join(
+            str(x).strip()
+            for x in (
+                ticket_data.get("issue"),
+                ticket_data.get("against"),
+                ticket_data.get("details"),
+            )
+            if x
+        )
+        from_msg = self._extract_ticket_severity(blob)
+        if from_msg:
+            return from_msg
+        intel = self.flow_context.get("_intelligence_sentiment") or {}
+        label = str(intel.get("label", "")).lower()
+        try:
+            score = int(intel.get("score_0_100", 50))
+        except (TypeError, ValueError):
+            score = 50
+        if label in ("negative", "very_negative") or score < 38:
+            return "serious"
+        return "mild"
+
     def _complete_ticket(self, ticket_data: Dict) -> str:
         # Ensure anonymous defaults to False if not set
         if ticket_data.get("anonymous") is None:
             ticket_data["anonymous"] = False
 
-        dept = ticket_data.get("department", "HR")
+        dept = ticket_data.get("department") or "HR"
         issue = ticket_data.get("issue", "your concern")
         details = ticket_data.get("details")
         against = ticket_data.get("against")
-        severity = str(ticket_data.get("severity") or "mild").strip().lower()
+        severity = self._infer_ticket_severity(ticket_data)
+        ticket_data["severity"] = severity
         anon = bool(ticket_data.get("anonymous", False))
 
         category_map = {
@@ -779,8 +931,8 @@ class SmartChatService:
             self._reset_flow()
             ref = str(ticket.id)[:8]
             return (
-                f"It looks like you already have a ticket for this (#{ref}). "
-                f"I've skipped creating a duplicate. Want me to add a follow-up comment there?"
+                f"It looks like you already have something similar open (#{ref}). "
+                f"I didn't create a duplicate. Want me to add a follow-up there?"
             )
 
         ticket_ref = str(ticket.id)[:8]
@@ -791,12 +943,14 @@ class SmartChatService:
 
         if anon:
             return (
-                f"Done. Your anonymous ticket has been raised with {dept}. 🎫\n"
-                f"Reference: #{ticket_ref}. I'll check back if it stays unresolved."
+                f"Done - I've shared this with HR (reference #{ticket_ref}).\n"
+                "This will be handled confidentially, and they'll follow up.\n"
+                "If you want to add anything later, I'm here."
             )
         return (
-            f"Done. Your ticket is with {dept}. 🎫\n"
-            f"Reference: #{ticket_ref}. I'll follow up if nothing happens."
+            f"Done - I've shared this with HR (reference #{ticket_ref}).\n"
+            "They'll review it and get back to you.\n"
+            "If anything else comes up, you can tell me anytime."
         )
 
     def _extract_ticket_severity(self, message: str) -> Optional[str]:
@@ -829,8 +983,8 @@ class SmartChatService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": message}
                 ],
-                temperature=0.7,
-                max_tokens=300
+                temperature=0.4,
+                max_tokens=140
             )
             
             return response["choices"][0]["message"]["content"]
@@ -842,6 +996,83 @@ class SmartChatService:
                 "What do you want to get done right now?"
             )
 
+    def stream_general_query_tokens(self, message: str, sentiment: str, mode: str):
+        """Yield true model tokens for general chat responses."""
+        user_name = self.user_context.get("user_name")
+        recent_sentiment = self.user_context.get("current_mood")
+        department = self.user_context.get("department")
+        system_prompt = build_context_aware_prompt(
+            user_name=user_name,
+            recent_sentiment=recent_sentiment,
+            department_context=department,
+            mode=mode,
+        )
+        return self.ai_client.chat_completion_stream(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message},
+            ],
+            temperature=0.4,
+            max_tokens=140,
+        )
+
+    def stream_non_flow_intent_tokens(self, intent: str, message: str, sentiment: str, mode: str):
+        """Yield model tokens for safe non-flow intents."""
+        intent_key = (intent or "general_query").strip().lower()
+        if intent_key == "general_query":
+            return self.stream_general_query_tokens(message=message, sentiment=sentiment, mode=mode)
+
+        if intent_key == "help_request":
+            system_prompt = (
+                f"{FRIENDLY_SYSTEM_PROMPT}\n"
+                "Reply in 1-2 short lines. Be specific and action-oriented. "
+                "Ask exactly one clear next-step question."
+            )
+            return self.ai_client.chat_completion_stream(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": message},
+                ],
+                temperature=0.3,
+                max_tokens=120,
+            )
+
+        if intent_key == "email_draft":
+            system_prompt = (
+                f"{FRIENDLY_SYSTEM_PROMPT}\n"
+                "You are helping draft workplace emails. "
+                "Reply in 1-2 short lines and ask one targeted clarification "
+                "(audience and tone) if missing."
+            )
+            return self.ai_client.chat_completion_stream(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": message},
+                ],
+                temperature=0.35,
+                max_tokens=140,
+            )
+
+        if intent_key in {"policy_query", "benefits_question"}:
+            return self.stream_policy_query_tokens(message=message)
+
+        return self.stream_general_query_tokens(message=message, sentiment=sentiment, mode=mode)
+
+    def stream_policy_query_tokens(self, message: str) -> Iterator[str]:
+        """
+        Stream policy answers for RAG intents.
+
+        Today this streams token-like chunks from the RAG answer text so the UI
+        gets progressive updates while preserving the existing policy fallback behavior.
+        """
+        answer = self._handle_policy_query(message)
+        words = [word for word in str(answer).split(" ") if word]
+        if not words:
+            yield str(answer)
+            return
+        for word in words:
+            yield f"{word} "
+
     def _deduplicate_response(self, response_text: str) -> str:
         text = (response_text or "").strip().lower()
         response_hash = hash(text)
@@ -851,8 +1082,30 @@ class SmartChatService:
         self.flow_context["last_response_hash"] = response_hash
         return response_text
 
-    def _finalize_response(self, response: str, intent: str, sentiment: str, mode: str, message_count: int = 0) -> str:
+    def _strip_robotic_phrasing(self, text: str) -> str:
+        replacements = {
+            "i can help you with that": "Got it",
+            "please provide more details": "Can you share a bit more detail?",
+            "please provide details": "Can you share a bit more detail?",
+            "kindly specify": "Can you clarify",
+            "how may i assist you": "What do you want to do next?",
+        }
+        output = text
+        for old, new in replacements.items():
+            output = re.sub(old, new, output, flags=re.IGNORECASE)
+        return output
+
+    def _finalize_response(
+        self,
+        response: str,
+        intent: str,
+        sentiment: str,
+        mode: str,
+        message_count: int = 0,
+        source_message: str = "",
+    ) -> str:
         cleaned = " ".join((response or "").split())
+        cleaned = self._strip_robotic_phrasing(cleaned)
         if not cleaned:
             return "I am here with you. What do you need right now?"
 
@@ -878,14 +1131,16 @@ class SmartChatService:
             cleaned = f"{cleaned}\n{ticket_ref}"
 
         if sentiment == "negative":
-            cleaned = self._append_eap_offer(cleaned)
+            cleaned = self._append_eap_offer(cleaned, source_message=source_message)
 
         if self.should_offer_wellness_tip(message_count):
             cleaned = f"{cleaned} {self.get_wellness_tip()}"
 
         return cleaned
     
-    def _append_eap_offer(self, response: str) -> str:
+    def _append_eap_offer(self, response: str, source_message: str = "") -> str:
+        if not self.eap_triggered(source_message):
+            return response
         eap_msg = (
             f"\n\nIf things feel heavy, you can reach out to our EAP hotline "
             f"({self.EAP_RESOURCES['hotline']}) — it's confidential."

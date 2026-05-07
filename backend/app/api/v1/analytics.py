@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
 from typing import List, Optional
 from uuid import UUID
 
@@ -8,64 +7,50 @@ from sqlalchemy.orm import Session
 from ...auth import require_roles
 from ...database import get_db
 from ...services.dashboard_analytics import (
-    build_ai_summary,
-    compute_weekly_quality,
     compute_kpi_overview,
-    employee_insights_for_hr,
-    sentiment_trend_days,
+    emotion_trend_days,
+    emotion_trend_days_for_manager,
+    employee_insights_for_manager,
+    manager_effectiveness_for_hr,
+    sentiment_analysis_source_drift,
+    sentiment_source_drift_timeseries,
+    sentiment_source_drift_timeseries_for_manager,
+)
+from ...services.dashboard_adapters import (
+    build_dashboard_bundle_contract,
+    build_employee_insight_contracts,
+    build_kpi_overview_contract,
+    build_manager_team_bundle_contract,
+    build_sentiment_trend_contracts,
+    EmployeeInsightContract,
+    KpiOverviewContract,
+    SentimentTrendContract,
+    WeeklyQualityContract,
 )
 from ...services.analytics import get_realtime_analytics_snapshot
 from ...models.user import User
+from ...schemas.analytics import (
+    KPIResponse,
+    EmotionTrendResponse,
+    SentimentSourceDriftResponse,
+    SentimentSourceTrendResponse,
+    SentimentTrendResponse,
+    EmployeeInsightResponse,
+    WeeklyQualityResponse,
+    DashboardBundleResponse,
+    AttritionRiskResponse,
+    AttritionSummaryResponse,
+    AttritionFactorResponse,
+    AttritionUserRiskResponse,
+    BurnoutRiskResponse,
+    BurnoutSummaryResponse,
+    ExecutiveDashboardResponse,
+    InsightResponse,
+    ManagerDashboardBundleResponse,
+    ManagerEffectivenessResponse,
+)
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
-
-
-class KPIResponse(BaseModel):
-    engagement_score: float
-    resolution_rate: float
-    avg_response_time: float
-    active_users: int
-    total_tickets: int
-    open_tickets: int
-    enps: float = 0.0
-
-
-class SentimentTrendResponse(BaseModel):
-    date: str
-    positive: float
-    neutral: float
-    negative: float
-
-
-class EmployeeInsightResponse(BaseModel):
-    id: str
-    employee_id: str
-    name: str
-    sentiment_score: int
-    risk_score: int
-    last_active: str
-    department: str
-    mental_health_score: Optional[int] = None
-
-
-class WeeklyQualityResponse(BaseModel):
-    window_days: int
-    feedback_responses: int
-    avg_csat: float
-    helpful_rate: float
-    detractor_rate: float
-    avg_first_response_seconds: float
-    conversations_measured: int
-    quality_label: str
-
-
-class DashboardBundleResponse(BaseModel):
-    """Single call for Next.js HR dashboard (reduces round trips)."""
-    metrics: KPIResponse
-    sentiment: List[SentimentTrendResponse]
-    employees: List[EmployeeInsightResponse]
-    weekly_quality: WeeklyQualityResponse
-    ai_summary: str
 
 
 @router.get("/overview", response_model=KPIResponse)
@@ -75,8 +60,8 @@ def get_overview(
     _hr=Depends(require_roles(["hr", "admin"])),
 ):
     del department_id  # reserved for future filter
-    data = compute_kpi_overview(db)
-    return KPIResponse(**data)
+    contract = build_kpi_overview_contract(db)
+    return KPIResponse(**contract.model_dump())
 
 
 @router.get("/sentiment", response_model=List[SentimentTrendResponse])
@@ -85,8 +70,62 @@ def get_sentiment_trend(
     db: Session = Depends(get_db),
     _hr=Depends(require_roles(["hr", "admin"])),
 ):
-    rows = sentiment_trend_days(db, days=days)
-    return [SentimentTrendResponse(**r) for r in rows]
+    contracts = build_sentiment_trend_contracts(db, days=days)
+    return [SentimentTrendResponse(**SentimentTrendContract.model_validate(row).model_dump()) for row in contracts]
+
+
+@router.get("/emotions", response_model=List[EmotionTrendResponse])
+def get_emotion_trend(
+    days: int = Query(default=14, le=90),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    return [EmotionTrendResponse(**row) for row in emotion_trend_days(db, days=days)]
+
+
+@router.get("/sentiment/source-drift", response_model=SentimentSourceDriftResponse)
+def get_sentiment_source_drift(
+    days: int = Query(default=7, ge=1, le=90),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Share of chat sentiment rows by classifier path (llm / lexicon / hybrid / provided) for drift monitoring."""
+    payload = sentiment_analysis_source_drift(db, days=days)
+    return SentimentSourceDriftResponse(**payload)
+
+
+@router.get("/sentiment/source-drift/timeseries", response_model=List[SentimentSourceTrendResponse])
+def get_sentiment_source_drift_timeseries(
+    days: int = Query(default=14, ge=1, le=90),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Daily % mix of classifier paths (same snapshot semantics as emotion trends)."""
+    rows = sentiment_source_drift_timeseries(db, days=days)
+    return [SentimentSourceTrendResponse(**row) for row in rows]
+
+
+@router.get("/manager/emotions", response_model=List[EmotionTrendResponse])
+def get_manager_emotion_trend(
+    days: int = Query(default=14, le=90),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["manager"])),
+):
+    return [
+        EmotionTrendResponse(**row)
+        for row in emotion_trend_days_for_manager(db, manager_id=current_user.id, days=days)
+    ]
+
+
+@router.get("/manager/sentiment/source-drift/timeseries", response_model=List[SentimentSourceTrendResponse])
+def get_manager_sentiment_source_drift_timeseries(
+    days: int = Query(default=14, ge=1, le=90),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["manager"])),
+):
+    """Classifier mix over time for direct reports only."""
+    rows = sentiment_source_drift_timeseries_for_manager(db, current_user.id, days=days)
+    return [SentimentSourceTrendResponse(**row) for row in rows]
 
 
 @router.get("/employees", response_model=List[EmployeeInsightResponse])
@@ -95,28 +134,40 @@ def get_employee_insights(
     db: Session = Depends(get_db),
     _hr=Depends(require_roles(["hr", "admin"])),
 ):
-    rows = employee_insights_for_hr(db, limit=limit)
-    return [EmployeeInsightResponse(**r) for r in rows]
+    contracts = build_employee_insight_contracts(db, limit=limit)
+    return [EmployeeInsightResponse(**EmployeeInsightContract.model_validate(row).model_dump()) for row in contracts]
 
 
 @router.get("/dashboard", response_model=DashboardBundleResponse)
 def get_hr_dashboard_bundle(
     days: int = Query(default=14, le=90),
+    drift_days: int = Query(default=7, ge=1, le=90),
     db: Session = Depends(get_db),
     _hr=Depends(require_roles(["hr", "admin"])),
 ):
-    metrics_dict = compute_kpi_overview(db)
-    metrics = KPIResponse(**metrics_dict)
-    sentiment = [SentimentTrendResponse(**r) for r in sentiment_trend_days(db, days=days)]
-    employees = [EmployeeInsightResponse(**r) for r in employee_insights_for_hr(db, limit=50)]
-    weekly_quality = WeeklyQualityResponse(**compute_weekly_quality(db, window_days=7))
-    ai_summary = build_ai_summary(db, open_tickets=metrics_dict["open_tickets"])
+    bundle = build_dashboard_bundle_contract(
+        db, days=days, employee_limit=50, drift_days=drift_days
+    )
     return DashboardBundleResponse(
-        metrics=metrics,
-        sentiment=sentiment,
-        employees=employees,
-        weekly_quality=weekly_quality,
-        ai_summary=ai_summary,
+        metrics=KPIResponse(**KpiOverviewContract.model_validate(bundle.metrics).model_dump()),
+        sentiment=[
+            SentimentTrendResponse(**SentimentTrendContract.model_validate(row).model_dump())
+            for row in bundle.sentiment
+        ],
+        employees=[
+            EmployeeInsightResponse(**EmployeeInsightContract.model_validate(row).model_dump())
+            for row in bundle.employees
+        ],
+        weekly_quality=WeeklyQualityResponse(
+            **WeeklyQualityContract.model_validate(bundle.weekly_quality).model_dump()
+        ),
+        ai_summary=bundle.ai_summary,
+        manager_pattern=bundle.manager_pattern,
+        sentiment_stale_days=bundle.sentiment_stale_days,
+        sustained_risk_window_days=bundle.sustained_risk_window_days,
+        sustained_risk_min_negative_turns=bundle.sustained_risk_min_negative_turns,
+        sentiment_source_drift=SentimentSourceDriftResponse(**bundle.sentiment_source_drift.model_dump()),
+        last_chat_sentiment_at=bundle.last_chat_sentiment_at,
     )
 
 
@@ -144,57 +195,6 @@ def get_realtime_metrics(
     return get_realtime_analytics_snapshot()
 
 
-class AttritionRiskResponse(BaseModel):
-    user_id: str
-    name: str
-    risk_score: float
-    risk_level: str
-
-
-class AttritionSummaryResponse(BaseModel):
-    risk_scores: List[AttritionRiskResponse]
-    average_risk: float
-
-
-class BurnoutRiskResponse(BaseModel):
-    user_id: str
-    name: str
-    risk_score: float
-    risk_level: str
-    factors: dict
-
-
-class BurnoutSummaryResponse(BaseModel):
-    risk_scores: List[BurnoutRiskResponse]
-    average_risk: float
-    high_risk_count: int
-    medium_risk_count: int
-
-
-class ExecutiveDashboardResponse(BaseModel):
-    org_health_score: float
-    burnout_risk_pct: float
-    attrition_risk_pct: float
-    enps: float
-    engagement_trend: List[dict]
-    top_risks: List[dict]
-    recommendations: List[str]
-
-
-class InsightResponse(BaseModel):
-    id: str
-    insight_type: str
-    title: str
-    description: str
-    severity: str
-    affected_entity_type: Optional[str]
-    affected_entity_id: Optional[str]
-    metrics: dict
-    recommendations: List[str]
-    is_resolved: bool
-    created_at: str
-
-
 @router.get("/attrition", response_model=AttritionSummaryResponse)
 def get_attrition_risk(
     department_id: Optional[UUID] = None,
@@ -207,6 +207,22 @@ def get_attrition_risk(
     service = AttritionRiskService(db=db)
     result = service.get_department_risk_summary(department_id)
 
+    return result
+
+
+@router.get("/attrition/{user_id}", response_model=AttritionUserRiskResponse)
+def get_attrition_risk_for_user(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Explainable attrition risk for one employee."""
+    from ...services.attrition import AttritionRiskService
+
+    service = AttritionRiskService(db=db)
+    result = service.calculate_risk(user_id)
+    user = db.query(User).filter(User.id == user_id).first()
+    result["name"] = user.name if user else "Employee"
     return result
 
 
@@ -341,3 +357,33 @@ def get_insights(
         )
         for row in result.fetchall()
     ]
+
+
+@router.get("/manager-effectiveness", response_model=List[ManagerEffectivenessResponse])
+def get_manager_effectiveness(
+    limit: int = Query(default=25, le=200),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    rows = manager_effectiveness_for_hr(db=db, limit=limit)
+    return [ManagerEffectivenessResponse(**row) for row in rows]
+
+
+@router.get("/manager/team", response_model=List[EmployeeInsightResponse])
+def get_manager_team_insights(
+    limit: int = Query(default=50, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["manager"])),
+):
+    rows = employee_insights_for_manager(db=db, manager_id=current_user.id, limit=limit)
+    return [EmployeeInsightResponse(**row) for row in rows]
+
+
+@router.get("/manager/dashboard", response_model=ManagerDashboardBundleResponse)
+def get_manager_dashboard_bundle(
+    limit: int = Query(default=50, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["manager"])),
+):
+    payload = build_manager_team_bundle_contract(db=db, manager_id=current_user.id, limit=limit)
+    return ManagerDashboardBundleResponse(**payload)
