@@ -52,15 +52,36 @@ if DATABASE_URL.startswith("sqlite"):
     )
 else:
     connect_args = _build_connect_args(DATABASE_URL)
+
+    # Supabase free tier has ~15 non-superuser connection slots total. With
+    # uvicorn --reload + APScheduler we burn through them fast. Cap the pool
+    # tight for managed providers; a dedicated Postgres can override via env
+    # vars if needed.
+    try:
+        parsed = make_url(DATABASE_URL)
+        host = (parsed.host or "").lower()
+    except Exception:
+        host = ""
+
+    is_managed_low_tier = host.endswith(".supabase.co") or "pooler.supabase.com" in host
+
+    if is_managed_low_tier:
+        pool_size = 2
+        max_overflow = 3
+    else:
+        pool_size = 10
+        max_overflow = 20
+
     engine = create_engine(
         DATABASE_URL,
         poolclass=QueuePool,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
         pool_pre_ping=True,
-        pool_recycle=3600,
+        pool_recycle=300,  # recycle idle connections after 5 min (Supabase kills idle conns)
+        pool_timeout=10,   # don't wait forever for a slot
         connect_args=connect_args,
-        echo=False
+        echo=False,
     )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
