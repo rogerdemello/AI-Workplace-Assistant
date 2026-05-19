@@ -3,16 +3,18 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { createSurvey, getSurveys } from "@/lib/services";
 import type { Survey } from "@/lib/domain-types";
 import { SentimentBadge } from "@/components/ui-bits";
-import { Plus, Sparkles } from "lucide-react";
+import { Plus, Sparkles, MessageSquarePlus } from "lucide-react";
 import { useChat } from "@/contexts/ChatContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import { SurveyResponseDialog } from "@/components/SurveyResponseDialog";
 
 export default function Surveys() {
   const [surveys, setSurveys] = useState<Survey[]>([]);
   const { open, send } = useChat();
   const { session } = useAuth();
   const [creating, setCreating] = useState(false);
+  const [respondingTo, setRespondingTo] = useState<string | null>(null);
   const loadSurveys = () => {
     void getSurveys().then(setSurveys);
   };
@@ -101,6 +103,17 @@ export default function Surveys() {
                 <div className="mt-3 h-1.5 rounded-full bg-secondary overflow-hidden">
                   <div className="h-full bg-teal-grad" style={{ width: `${pct}%` }} />
                 </div>
+
+                {s.status === "live" && (
+                  <button
+                    type="button"
+                    onClick={() => setRespondingTo(s.id)}
+                    className="mt-4 inline-flex items-center gap-1.5 text-xs text-foreground font-medium hover:text-accent transition"
+                  >
+                    <MessageSquarePlus className="size-3.5" />
+                    Respond now
+                  </button>
+                )}
               </div>
             );
           })}
@@ -111,6 +124,12 @@ export default function Surveys() {
           )}
         </div>
       </div>
+
+      <SurveyResponseDialog
+        surveyId={respondingTo}
+        onClose={() => setRespondingTo(null)}
+        onSubmitted={loadSurveys}
+      />
     </AppLayout>
   );
 }

@@ -19,6 +19,30 @@ export function readStoredSession(): AuthSession | null {
   }
 }
 
+/**
+ * Extract a human-friendly error message from a failed fetch Response.
+ * Backend FastAPI errors typically come back as `{ detail: "..." }` or `{ detail: [{loc, msg}] }`.
+ */
+export async function extractErrorMessage(response: Response): Promise<string> {
+  try {
+    const ct = response.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const body = (await response.json()) as Record<string, unknown>;
+      const detail = body?.detail;
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail) && detail.length > 0) {
+        const first = detail[0] as Record<string, unknown>;
+        return String(first.msg ?? "Request failed.");
+      }
+      if (body?.message && typeof body.message === "string") return body.message;
+    }
+    const text = await response.text();
+    return text.slice(0, 200) || `Request failed (${response.status}).`;
+  } catch {
+    return `Request failed (${response.status}).`;
+  }
+}
+
 export async function getJson<T>(path: string): Promise<T | null> {
   const token = await ensureSessionToken(readStoredSession());
   if (!token) return null;

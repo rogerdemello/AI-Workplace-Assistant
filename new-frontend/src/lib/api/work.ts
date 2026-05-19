@@ -213,6 +213,55 @@ export async function createSurvey(input: {
   return Boolean(row);
 }
 
+export interface SurveyQuestionDetail {
+  id: string;
+  type: string;
+  question: string;
+  options?: string[];
+  required?: boolean;
+}
+
+export interface SurveyDetail {
+  id: string;
+  title: string;
+  description?: string | null;
+  is_active: boolean;
+  allow_anonymous: boolean;
+  questions: SurveyQuestionDetail[];
+}
+
+export async function getSurveyDetail(surveyId: string): Promise<SurveyDetail | null> {
+  const row = await getJson<Record<string, unknown>>(`/api/v1/surveys/${surveyId}`);
+  if (!row) return null;
+  const questionsRaw = Array.isArray(row.questions) ? (row.questions as Array<Record<string, unknown>>) : [];
+  return {
+    id: String(row.id ?? ""),
+    title: String(row.title ?? "Untitled survey"),
+    description: row.description ? String(row.description) : null,
+    is_active: Boolean(row.is_active),
+    allow_anonymous: Boolean(row.allow_anonymous),
+    questions: questionsRaw.map((q) => ({
+      id: String(q.id ?? ""),
+      type: String(q.type ?? "text"),
+      question: String(q.question ?? ""),
+      options: Array.isArray(q.options) ? q.options.map(String) : undefined,
+      required: q.required != null ? Boolean(q.required) : true,
+    })),
+  };
+}
+
+export async function submitSurveyResponse(
+  surveyId: string,
+  responses: Record<string, unknown>,
+  anonymous = false,
+): Promise<boolean> {
+  const row = await postJson<Record<string, unknown>>(`/api/v1/surveys/${surveyId}/respond`, {
+    responses,
+    anonymous,
+  });
+  return Boolean(row);
+}
+
 function parseManagerPattern(raw: unknown): ManagerPatternInsight | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;

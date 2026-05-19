@@ -95,6 +95,106 @@ def _leave_balance_for_user(db: Session, user_id) -> Tuple[int, int, int]:
     return annual, used, remaining
 
 
+class UserSelfUpdate(BaseModel):
+    name: Optional[str] = None
+    designation: Optional[str] = None
+
+
+class UserAdminUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    designation: Optional[str] = None
+    department_id: Optional[str] = None
+    manager_id: Optional[str] = None
+    role: Optional[str] = None
+    status: Optional[str] = None
+
+
+@router.patch("/me", response_model=UserListItem)
+def update_my_profile(
+    payload: UserSelfUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Self-service profile edit (name, designation only)."""
+    changed = False
+    if payload.name is not None and payload.name.strip():
+        current_user.name = payload.name.strip()
+        changed = True
+    if payload.designation is not None:
+        current_user.designation = payload.designation.strip() or None
+        changed = True
+
+    if changed:
+        db.add(current_user)
+        db.commit()
+        db.refresh(current_user)
+
+    dept = _dept_map(db)
+    dname = dept.get(str(current_user.department_id), "General") if current_user.department_id else "General"
+    return UserListItem(
+        id=str(current_user.id),
+        email=current_user.email,
+        name=current_user.name,
+        role=current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role),
+        employee_id=current_user.employee_id,
+        designation=current_user.designation,
+        department=dname,
+        status=current_user.status.value if hasattr(current_user.status, "value") else str(current_user.status),
+    )
+
+
+@router.patch("/{user_id}", response_model=UserListItem)
+def admin_update_user(
+    user_id: UUID,
+    payload: UserAdminUpdate,
+    db: Session = Depends(get_db),
+    _hr: User = Depends(require_roles(["hr", "admin"])),
+):
+    """Admin/HR: update any user. Role/status/department changes go through here."""
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if payload.name is not None and payload.name.strip():
+        u.name = payload.name.strip()
+    if payload.email is not None and payload.email.strip():
+        u.email = payload.email.strip().lower()
+    if payload.designation is not None:
+        u.designation = payload.designation.strip() or None
+    if payload.department_id is not None:
+        u.department_id = payload.department_id or None
+    if payload.manager_id is not None:
+        u.manager_id = payload.manager_id or None
+    if payload.role is not None:
+        try:
+            u.role = UserRole(payload.role)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid role: {payload.role}")
+    if payload.status is not None:
+        try:
+            u.status = UserStatus(payload.status)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid status: {payload.status}")
+
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+
+    dept = _dept_map(db)
+    dname = dept.get(str(u.department_id), "General") if u.department_id else "General"
+    return UserListItem(
+        id=str(u.id),
+        email=u.email,
+        name=u.name,
+        role=u.role.value if hasattr(u.role, "value") else str(u.role),
+        employee_id=u.employee_id,
+        designation=u.designation,
+        department=dname,
+        status=u.status.value if hasattr(u.status, "value") else str(u.status),
+    )
+
+
 @router.get("", response_model=List[UserListItem])
 def list_users(
     db: Session = Depends(get_db),

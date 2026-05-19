@@ -5,8 +5,10 @@ import { getEmployeeTimeline, getTickets, getUserDetail } from "@/lib/services";
 import type { UserDetail } from "@/lib/services";
 import type { Ticket } from "@/lib/domain-types";
 import { Avatar, SentimentBadge, StatusPill, PriorityPill } from "@/components/ui-bits";
-import { ArrowLeft, Calendar, MapPin, Mail, Sparkles, Zap, Moon } from "lucide-react";
+import { ArrowLeft, Calendar, MapPin, Mail, Sparkles, Zap, Moon, Pencil } from "lucide-react";
 import { useChat } from "@/contexts/ChatContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { EditProfileDialog } from "@/components/EditProfileDialog";
 
 type LoadState = "loading" | "ready" | "missing";
 
@@ -16,7 +18,16 @@ export default function EmployeeProfile() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [timeline, setTimeline] = useState<Array<{ date: string; text: string; tone: string }>>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [editOpen, setEditOpen] = useState(false);
   const { open, send } = useChat();
+  const { session } = useAuth();
+
+  const refreshProfile = () => {
+    if (!id) return;
+    getUserDetail(id).then((row) => {
+      if (row) setEmp(row);
+    });
+  };
 
   useEffect(() => {
     if (!id) {
@@ -41,6 +52,8 @@ export default function EmployeeProfile() {
     getTickets().then((all) => setTickets(all.filter((t) => t.raisedBy === id)));
     getEmployeeTimeline(id).then(setTimeline);
   }, [id]);
+
+  const isSelf = Boolean(emp && session && (session.id === emp.id || session.email === emp.email));
 
   if (!id || loadState === "missing") {
     return (
@@ -96,16 +109,27 @@ export default function EmployeeProfile() {
             </div>
             {emp.managerName && <div className="mt-2 text-xs text-muted-foreground">Reports to {emp.managerName}</div>}
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              open();
-              void send(`Tell me about ${emp.name}`);
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-ink text-primary-foreground text-sm font-medium"
-          >
-            <Sparkles className="size-4" /> Ask MARK about {emp.name.split(" ")[0]}
-          </button>
+          <div className="flex flex-col gap-2 md:flex-row md:items-center">
+            {isSelf && (
+              <button
+                type="button"
+                onClick={() => setEditOpen(true)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border bg-card text-foreground text-sm font-medium hover:bg-secondary transition"
+              >
+                <Pencil className="size-4" /> Edit profile
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                open();
+                void send(`Tell me about ${emp.name}`);
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-ink text-primary-foreground text-sm font-medium"
+            >
+              <Sparkles className="size-4" /> Ask MARK about {emp.name.split(" ")[0]}
+            </button>
+          </div>
         </div>
 
         <div className="mt-6 grid md:grid-cols-3 gap-4">
@@ -250,6 +274,14 @@ export default function EmployeeProfile() {
           </div>
         </div>
       </div>
+
+      <EditProfileDialog
+        open={editOpen}
+        initialName={emp.name}
+        initialDesignation={emp.role || ""}
+        onClose={() => setEditOpen(false)}
+        onSaved={refreshProfile}
+      />
     </AppLayout>
   );
 }
