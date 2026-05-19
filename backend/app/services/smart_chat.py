@@ -195,6 +195,11 @@ class SmartChatService:
         "complaint about": "ticket_create",
         "problem with my manager": "ticket_create",
         "issue with my manager": "ticket_create",
+        # Escalate existing ticket
+        "escalate my ticket": "escalate_ticket",
+        "escalate the ticket": "escalate_ticket",
+        "escalate ticket": "escalate_ticket",
+        "please escalate": "escalate_ticket",
         # Leave apply
         "leave request": "leave_request",
         "apply leave": "leave_request",

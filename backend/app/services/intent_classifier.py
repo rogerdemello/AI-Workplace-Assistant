@@ -97,7 +97,49 @@ INTENTS = {
             "Hi there",
             "Thank you for your help"
         ]
-    }
+    },
+    "help_request": {
+        "description": "User wants topical help (timesheet, email drafting, policy clarification, recognition note)",
+        "examples": [
+            "Help me with my timesheet",
+            "I need help with my email",
+            "Can you help me with the policy?",
+            "Assist me with a recognition note",
+            "Help me with missing hours",
+        ],
+    },
+    "escalate_ticket": {
+        "description": "User wants to escalate an existing open ticket to critical priority",
+        "examples": [
+            "Escalate my ticket",
+            "Please escalate the ticket",
+            "Escalate this complaint",
+        ],
+    },
+    "reminder": {
+        "description": "User wants to set or cancel a reminder",
+        "examples": [
+            "Remind me to drink water at 4pm",
+            "Set a reminder for my 1:1",
+            "Remind me to take my medicine",
+        ],
+    },
+    "resignation_support": {
+        "description": "User is considering leaving the company (not a leave request)",
+        "examples": [
+            "I want to resign",
+            "I'm thinking of leaving the company",
+            "I want to quit my job",
+        ],
+    },
+    "leave_balance": {
+        "description": "User asks how much leave is remaining (query only)",
+        "examples": [
+            "How many leaves do I have left?",
+            "What is my leave balance?",
+            "Leave days remaining",
+        ],
+    },
 }
 
 INTENT_LIST = list(INTENTS.keys())
@@ -128,8 +170,10 @@ def _build_fast_routes() -> List[Tuple[re.Pattern, str, float, str]]:
         # Greeting / thanks
         (r"^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening)|what\s+can\s+you\s+do|who\s+are\s+you)([\s,]|$|\!|\?|\.)", "general_query", 0.88, "Fast-path: greeting or intro"),
         (r"^(thanks?|thank\s+you|thx|ty)(\s|$|\!|\.|\?)", "general_query", 0.88, "Fast-path: thanks"),
-        # Help
-        (r"\b(help\s+me|i\s+need\s+help|can\s+you\s+help|assist\s+me|what\s+can\s+you\s+help\s+with)\b", "general_query", 0.85, "Fast-path: help request"),
+        # Help (specific topical help — timesheet, email, policy, complaint)
+        (r"\b(help\s+me\s+with|i\s+need\s+help\s+with|assist\s+me\s+with|can\s+you\s+help\s+with)\b", "help_request", 0.88, "Fast-path: topical help request"),
+        # Generic help (open-ended) — falls back to general query
+        (r"\b(help\s+me|i\s+need\s+help|can\s+you\s+help|what\s+can\s+you\s+help\s+with)\b", "general_query", 0.85, "Fast-path: generic help"),
     ]
     compiled = []
     for pattern, intent, conf, reason in routes:

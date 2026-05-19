@@ -29,6 +29,7 @@ def test_parse_llm_json_invalid_returns_none():
 
 
 def test_analyze_stays_lexicon_when_hybrid_off(monkeypatch):
+    monkeypatch.setattr(settings, "USE_ENHANCED_SENTIMENT", False)
     monkeypatch.setattr(settings, "SENTIMENT_HYBRID_ENABLED", False)
     svc = SentimentService()
     r = svc.analyze("This is very helpful and amazing")
@@ -37,6 +38,7 @@ def test_analyze_stays_lexicon_when_hybrid_off(monkeypatch):
 
 
 def test_analyze_uses_llm_when_enabled_and_mock_returns(monkeypatch):
+    monkeypatch.setattr(settings, "USE_ENHANCED_SENTIMENT", False)
     monkeypatch.setattr(settings, "SENTIMENT_HYBRID_ENABLED", True)
     # Avoid hybrid merge path so we assert pure LLM output.
     monkeypatch.setattr(settings, "SENTIMENT_BLEND_SCORE_GAP_THRESHOLD", 99.0)
@@ -56,6 +58,7 @@ def test_analyze_uses_llm_when_enabled_and_mock_returns(monkeypatch):
 
 
 def test_analyze_hybrid_when_llm_and_lexicon_disagree(monkeypatch):
+    monkeypatch.setattr(settings, "USE_ENHANCED_SENTIMENT", False)
     monkeypatch.setattr(settings, "SENTIMENT_HYBRID_ENABLED", True)
     monkeypatch.setattr(settings, "SENTIMENT_BLEND_ON_DISAGREEMENT", True)
     monkeypatch.setattr(settings, "SENTIMENT_BLEND_SCORE_GAP_THRESHOLD", 0.15)
