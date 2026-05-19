@@ -16,6 +16,7 @@ from ..models.reminder_schedule import ReminderSchedule
 from ..models.automation_action import AutomationAction
 from ..models.leave_request import LeaveRequest, LeaveStatus, LeaveType
 from ..models.meeting_event import MeetingEvent
+from ..models.hr_alert import HrAlert
 from ..core.time import utcnow_naive
 from ..database import SessionLocal
 
