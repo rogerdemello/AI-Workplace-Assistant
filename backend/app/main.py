@@ -104,9 +104,17 @@ async def lifespan(app: FastAPI):
         logger.info(f"Connecting to PostgreSQL: {settings.DATABASE_URL.split('@')[1] if '@' in settings.DATABASE_URL else 'database'}")
     else:
         logger.info("Using SQLite for development")
-    
-    if not settings.DATABASE_URL.startswith("sqlite"):
+
+    # Create tables on boot for both SQLite (no migrations) and Postgres (idempotent DDL).
+    # Wrapped so a transient DB outage produces clear logs instead of a startup crash —
+    # individual endpoints will then surface 503s when the DB is actually needed.
+    try:
         Base.metadata.create_all(bind=engine)
+    except Exception:
+        logger.exception(
+            "Database initialization failed at startup. The API will boot but "
+            "DB-backed endpoints will fail until connectivity is restored."
+        )
 
     if flags.enable_analytics_events:
         register_event_driven_analytics()
