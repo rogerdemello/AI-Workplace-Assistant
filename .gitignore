@@ -60,32 +60,23 @@ backend/.ruff_cache/
 
 # Node / frontend
 node_modules/
-frontend/node_modules/
 new-frontend/node_modules/
 .next/
-frontend/.next/
 *.tsbuildinfo
 build_full.log
 dist/
-frontend/dist/
 new-frontend/dist/
 coverage/
-frontend/coverage/
 new-frontend/coverage/
 .vite/
-frontend/.vite/
 new-frontend/.vite/
 playwright-report/
-frontend/playwright-report/
 new-frontend/playwright-report/
 test-results/
-frontend/test-results/
 new-frontend/test-results/
 .turbo/
-frontend/.turbo/
 new-frontend/.turbo/
 .vercel/
-frontend/.vercel/
 new-frontend/.vercel/
 
 # Logs

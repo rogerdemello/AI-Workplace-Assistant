@@ -48,8 +48,16 @@ Phase 1 prioritizes:
 - Deployment: Docker + Kubernetes (AWS or Azure)
 
 ## Local Development
-- Primary frontend: `new-frontend`
-- Legacy frontend (kept for reference): `frontend`
+- Frontend: `new-frontend` (Vite + React + React Router)
+- Backend: `backend` (FastAPI)
+
+```bash
+# Backend
+cd backend && python -m uvicorn app.main:app --reload
+
+# Frontend
+cd new-frontend && npm install && npm run dev
+```
 
 ### Seeded accounts (FastAPI)
 Run from `backend`: `python -m scripts.seed_dummy_users`
