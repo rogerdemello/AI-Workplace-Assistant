@@ -205,7 +205,7 @@ export default function Employees() {
         {!loading && directoryError === "auth" && (
           <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
             Your session expired or the token is invalid — please log out and sign in again (HR account:{" "}
-            <span className="font-mono text-xs">hr1@infeedo.ai</span>).
+            <span className="font-mono text-xs">hr1@mark.ai</span>).
           </div>
         )}
 

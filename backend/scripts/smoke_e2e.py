@@ -75,11 +75,11 @@ def main() -> int:
     failures: list[str] = []
     try:
         # HR
-        hr_t = _login("hr1@infeedo.ai")
+        hr_t = _login("hr1@mark.ai")
         status, me = _request("GET", "/api/v1/auth/me", headers=_hdr(hr_t))
         assert status == 200 and me.get("email")
         status, users = _request("GET", "/api/v1/users", headers=_hdr(hr_t))
-        assert status == 200 and isinstance(users, list) and len(users) >= 2
+        assert status == 200 and isinstance(users, list) and len(users) >= 1
         status, emps = _request("GET", "/api/v1/analytics/employees", headers=_hdr(hr_t))
         assert status == 200 and isinstance(emps, list)
         status, dash = _request("GET", "/api/v1/analytics/dashboard", headers=_hdr(hr_t))
@@ -87,7 +87,7 @@ def main() -> int:
         print("[ok] HR auth, /users, /analytics/employees, /analytics/dashboard")
 
         # Employee chat + tickets
-        em_t = _login("employee1@infeedo.ai")
+        em_t = _login("emp1@mark.ai")
         status, _ = _request("GET", "/api/v1/auth/me", headers=_hdr(em_t))
         assert status == 200
         status, tix = _request("GET", "/api/v1/tickets", headers=_hdr(em_t))
@@ -100,15 +100,6 @@ def main() -> int:
         )
         assert status == 200 and reply.get("response")
         print("[ok] Employee auth, tickets list, unified chat/message")
-
-        # Manager team (optional for DBs where userrole enum lacks manager)
-        try:
-            mgr_t = _login("manager1@infeedo.ai")
-            status, team = _request("GET", "/api/v1/analytics/manager/team", headers=_hdr(mgr_t))
-            assert status == 200 and isinstance(team, list)
-            print(f"[ok] Manager auth, manager team insights ({len(team)} row(s))")
-        except Exception as manager_exc:
-            print(f"[warn] Manager path skipped: {manager_exc}")
     except Exception as exc:
         failures.append(str(exc))
         print(f"[fail] {exc}", file=sys.stderr)

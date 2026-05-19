@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     ENABLE_PRODUCTIVITY_AGENT: bool = False
     ENABLE_MULTI_AGENT_ORCHESTRATION: bool = False
     WHATSAPP_VERIFY_TOKEN: str = ""
-    WHATSAPP_DEFAULT_USER_EMAIL: str = "employee1@infeedo.ai"
+    WHATSAPP_DEFAULT_USER_EMAIL: str = "emp1@mark.ai"
     WHATSAPP_USER_MAP: str = ""
     ENABLE_WHATSAPP_OUTBOUND: bool = False
     TWILIO_ACCOUNT_SID: str = ""

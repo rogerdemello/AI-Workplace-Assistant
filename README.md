@@ -62,13 +62,10 @@ cd new-frontend && npm install && npm run dev
 ### Seeded accounts (FastAPI)
 Run from `backend`: `python -m scripts.seed_dummy_users`
 
-| Role      | Email                  | Password     |
-|-----------|-------------------------|--------------|
-| HR        | `hr1@infeedo.ai`        | `password123` |
-| Manager   | `manager1@infeedo.ai`   | `password123` |
-| Employee  | `employee1@infeedo.ai`  | `password123` |
-
-`employee1` is linked to **`manager1`** as direct manager and to a **`General`** department so manager dashboards have data after seed.
+| Role      | Email           | Password      |
+|-----------|-----------------|---------------|
+| HR        | `hr1@mark.ai`   | `password123` |
+| Employee  | `emp1@mark.ai`  | `password123` |
 
 ### End-to-end smoke (optional)
 With API running (`uvicorn`) and DB seeded:

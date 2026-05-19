@@ -7,7 +7,7 @@ export default function Login() {
   const nav = useNavigate();
   const location = useLocation();
   const { loginWithEmail } = useAuth();
-  const [email, setEmail] = useState("employee1@infeedo.ai");
+  const [email, setEmail] = useState("emp1@mark.ai");
   const [password, setPassword] = useState("password123");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -20,7 +20,7 @@ export default function Login() {
     try {
       const session = await loginWithEmail(email, password);
       if (!session) {
-        setLoginError("Invalid email or password. Seed users: employee1@infeedo.ai and hr1@infeedo.ai (password123).");
+        setLoginError("Invalid email or password. Seed users: emp1@mark.ai and hr1@mark.ai (password123).");
         return;
       }
 
@@ -86,7 +86,7 @@ export default function Login() {
               {busy ? "Signing in…" : "Continue"} <ArrowRight className="size-4" />
             </button>
             {loginError ? <p className="text-xs text-danger">{loginError}</p> : null}
-            <p className="text-xs text-muted-foreground">Seed users: employee1@infeedo.ai, hr1@infeedo.ai — run backend `python -m scripts.seed_dummy_users`.</p>
+            <p className="text-xs text-muted-foreground">Seed users: emp1@mark.ai, hr1@mark.ai — run backend `python -m scripts.seed_dummy_users`.</p>
           </form>
 
           <div className="mt-6 flex items-center gap-3">
@@ -102,7 +102,7 @@ export default function Login() {
               onClick={async () => {
                 setBusy(true);
                 try {
-                  const session = await loginWithEmail("employee1@infeedo.ai", "password123");
+                  const session = await loginWithEmail("emp1@mark.ai", "password123");
                   if (session) nav(getDefaultRouteForRole(session.role), { replace: true });
                 } finally {
                   setBusy(false);
@@ -110,7 +110,7 @@ export default function Login() {
               }}
               className="h-11 rounded-lg bg-card border border-border text-sm flex items-center justify-center gap-2 hover:border-foreground/30 transition-colors disabled:opacity-60"
             >
-              <Sparkles className="size-4 text-accent" /> Employee (employee1)
+              <Sparkles className="size-4 text-accent" /> Employee (emp1)
             </button>
             <button
               type="button"
@@ -118,7 +118,7 @@ export default function Login() {
               onClick={async () => {
                 setBusy(true);
                 try {
-                  const session = await loginWithEmail("hr1@infeedo.ai", "password123");
+                  const session = await loginWithEmail("hr1@mark.ai", "password123");
                   if (session) nav(getDefaultRouteForRole(session.role), { replace: true });
                 } finally {
                   setBusy(false);

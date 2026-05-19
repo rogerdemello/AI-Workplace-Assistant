@@ -72,6 +72,5 @@ After running `cd backend && python -m scripts.seed_dummy_users`:
 
 | Role | Email | Password |
 | --- | --- | --- |
-| HR | `hr1@infeedo.ai` | `password123` |
-| Manager | `manager1@infeedo.ai` | `password123` |
-| Employee | `employee1@infeedo.ai` | `password123` |
+| HR | `hr1@mark.ai` | `password123` |
+| Employee | `emp1@mark.ai` | `password123` |
