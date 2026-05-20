@@ -776,13 +776,22 @@ class SmartChatService:
 
         try:
             result = RAGOrchestrator(self.db, use_mock=self.use_mock).ask(message)
-            
+
             response = result.get("answer", "")
             citations = result.get("citations", [])
-            
+
             if citations:
-                response += "\n\n" + " ".join([f"[{c}]" for c in citations])
-            
+                # Render as a "Sources:" footer with bullet items rather than
+                # bracketed inline text — much easier to scan and matches the
+                # source-attribution UX promised in the roadmap.
+                # Dedupe in case the LLM cited the same chunk twice.
+                seen = []
+                for c in citations:
+                    if c and c not in seen:
+                        seen.append(c)
+                if seen:
+                    response += "\n\nSources:\n" + "\n".join(f"• {c}" for c in seen)
+
             return response
         except Exception as e:
             logger.error(f"RAG query failed: {e}")
@@ -930,6 +939,7 @@ class SmartChatService:
             query=query_text,
             category=category,
             priority=priority,
+            is_anonymous=anon,
         )
 
         if not is_new:

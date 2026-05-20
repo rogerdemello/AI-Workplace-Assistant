@@ -22,6 +22,8 @@ import EmailAssistant from "./pages/EmailAssistant";
 import Admin from "./pages/Admin";
 import Billing from "./pages/Billing";
 import KnowledgeBase from "./pages/KnowledgeBase";
+import OAuthCallback from "./pages/OAuthCallback";
+import Rooms from "./pages/Rooms";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -130,6 +132,22 @@ const App = () => (
                 element={
                   <ProtectedRoute roles={["hr"]}>
                     <Billing />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/rooms"
+                element={
+                  <ProtectedRoute>
+                    <Rooms />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/oauth/callback/:provider"
+                element={
+                  <ProtectedRoute>
+                    <OAuthCallback />
                   </ProtectedRoute>
                 }
               />

@@ -4,6 +4,8 @@ import { Clock, MessageSquare, Sparkles, ArrowRight, Activity, BellRing } from "
 import { motion } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { useEffect, useState } from "react";
+import { CalendarConnectCard } from "@/components/employee/CalendarConnectCard";
+import { WhatsappLinkCard } from "@/components/employee/WhatsappLinkCard";
 import {
   cancelReminder,
   getPortalChats,
@@ -349,6 +351,10 @@ export default function Employee() {
             </ul>
           )}
         </div>
+
+        <WhatsappLinkCard />
+
+        <CalendarConnectCard />
 
         <div className="mt-10 rounded-2xl border border-border bg-card p-6">
           <div className="flex items-center justify-between mb-5">

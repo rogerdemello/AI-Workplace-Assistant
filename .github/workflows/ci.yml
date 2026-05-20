@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        env:
+          DATABASE_URL: sqlite:///./test.db
+          REDIS_URL: redis://localhost:6379
+          AZURE_OPENAI_API_KEY: mock-key
+          AZURE_OPENAI_ENDPOINT: https://mock.openai.azure.com
+          AZURE_OPENAI_DEPLOYMENT: gpt-4
+          SECRET_KEY: ci-test-secret
+          TESTING: "1"
+        run: pytest -q --maxfail=5
+
+  frontend-build:
+    name: Frontend build (tsc + vite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: new-frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: new-frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+  smoke-e2e:
+    name: Smoke E2E (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: backend-tests
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Seed dummy users
+        env:
+          DATABASE_URL: sqlite:///./smoke.db
+          REDIS_URL: redis://localhost:6379
+          AZURE_OPENAI_API_KEY: mock-key
+          AZURE_OPENAI_ENDPOINT: https://mock.openai.azure.com
+          AZURE_OPENAI_DEPLOYMENT: gpt-4
+          SECRET_KEY: ci-smoke-secret
+        run: python -m scripts.seed_dummy_users || echo "seed step exited non-zero; continuing"
+
+      - name: Start backend
+        env:
+          DATABASE_URL: sqlite:///./smoke.db
+          REDIS_URL: redis://localhost:6379
+          AZURE_OPENAI_API_KEY: mock-key
+          AZURE_OPENAI_ENDPOINT: https://mock.openai.azure.com
+          AZURE_OPENAI_DEPLOYMENT: gpt-4
+          SECRET_KEY: ci-smoke-secret
+          ENABLE_ALERT_BACKGROUND: "false"
+        run: |
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/healthz > /dev/null; then
+              echo "backend ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend never became healthy"
+          cat server.log
+          exit 1
+
+      - name: Run smoke script
+        env:
+          SMOKE_API_URL: http://127.0.0.1:8000
+          SMOKE_PASSWORD: password123
+        run: python -m scripts.smoke_e2e
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-server-log
+          path: backend/server.log

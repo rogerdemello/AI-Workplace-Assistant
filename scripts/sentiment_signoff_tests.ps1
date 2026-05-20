@@ -1,4 +1,4 @@
-# Automated checks for docs/STAGING_SIGNOFF_SENTIMENT.md (pytest + frontend build).
+# Automated checks for sentiment and analytics readiness (pytest + frontend build).
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 

@@ -735,6 +735,41 @@ export async function getTicketActionLogs(ticketId: string): Promise<TicketActio
   }));
 }
 
+export interface TicketAiSummary {
+  ticket_id: string;
+  summary: string;
+  generated_at: string;
+  model: string;
+  message_count: number;
+}
+
+export async function getTicketAiSummary(
+  ticketId: string,
+  refresh = false,
+): Promise<TicketAiSummary | null> {
+  const qs = refresh ? "?refresh=true" : "";
+  return getJson<TicketAiSummary>(`/api/v1/tickets/${ticketId}/ai-summary${qs}`);
+}
+
+export interface TicketSentimentPoint {
+  date: string;
+  score: number | null;
+  sample_size: number;
+}
+
+export interface TicketSentimentHistory {
+  ticket_id: string;
+  user_id: string;
+  since: string;
+  points: TicketSentimentPoint[];
+}
+
+export async function getTicketSentimentHistory(
+  ticketId: string,
+): Promise<TicketSentimentHistory | null> {
+  return getJson<TicketSentimentHistory>(`/api/v1/tickets/${ticketId}/sentiment-history`);
+}
+
 export async function getRelatedTickets(ticketId: string): Promise<Ticket[]> {
   const rows = await getJson<BackendTicketPayload[]>(`/api/v1/tickets/${ticketId}/related`);
   if (!rows) return [];

@@ -14,14 +14,19 @@ import {
   escalateTicket,
   getRelatedTickets,
   getTicketActionLogs,
+  getTicketAiSummary,
   getTicketMessages,
+  getTicketSentimentHistory,
   listTicketAssignees,
   markTicketInProgress,
   scheduleTicketCheckin,
   type TicketActionLog,
+  type TicketAiSummary,
   type TicketAssignee,
   type TicketMessage,
+  type TicketSentimentHistory,
 } from "@/lib/services";
+import { Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts";
 
 export function TicketDecisionPanel({
   selected,
@@ -45,7 +50,11 @@ export function TicketDecisionPanel({
   const [busy, setBusy] = useState<string | null>(null);
   const [threadFilter, setThreadFilter] = useState<"all" | "employee" | "internal">("all");
   const [relatedTickets, setRelatedTickets] = useState<Ticket[]>([]);
-  const [showRelated, setShowRelated] = useState(false);
+  const [aiSummary, setAiSummary] = useState<TicketAiSummary | null>(null);
+  const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+  const [sentimentHistory, setSentimentHistory] = useState<TicketSentimentHistory | null>(null);
+  // Drives the live SLA countdown — re-render every 30s while the drawer is open.
+  const [, setNowTick] = useState(0);
 
   useEffect(() => {
     if (!selected) return;
@@ -53,12 +62,40 @@ export function TicketDecisionPanel({
     setInternalNoteText("");
     setReassignTo("");
     setThreadFilter("all");
-    setShowRelated(false);
     setRelatedTickets([]);
+    setAiSummary(null);
+    setSentimentHistory(null);
+    setAiSummaryLoading(true);
     getTicketMessages(selected.id).then(setMessages);
     getTicketActionLogs(selected.id).then(setActionLogs);
     listTicketAssignees().then(setAssignees);
+    getTicketAiSummary(selected.id)
+      .then((s) => setAiSummary(s))
+      .finally(() => setAiSummaryLoading(false));
+    getTicketSentimentHistory(selected.id).then(setSentimentHistory);
+    // Auto-load related tickets when the drawer opens — feature uses them as
+    // a duplicate-detection signal, so users shouldn't have to hunt for the
+    // button before they see related issues.
+    void getRelatedTickets(selected.id).then((rows) => {
+      setRelatedTickets(rows.filter((row) => row.id !== selected.id));
+    });
   }, [selected?.id]);
+
+  // Tick once a minute so the SLA countdown stays approximately fresh without
+  // re-rendering on every animation frame.
+  useEffect(() => {
+    if (!selected) return undefined;
+    const interval = window.setInterval(() => setNowTick((n) => n + 1), 30_000);
+    return () => window.clearInterval(interval);
+  }, [selected?.id]);
+
+  const refreshAiSummary = async () => {
+    if (!selected) return;
+    setAiSummaryLoading(true);
+    const next = await getTicketAiSummary(selected.id, true);
+    setAiSummary(next);
+    setAiSummaryLoading(false);
+  };
 
   const timelineItems = useMemo(() => {
     if (!selected) return [];
@@ -188,15 +225,6 @@ export function TicketDecisionPanel({
     onTicketUpdated(selected.id);
   };
 
-  const loadRelatedTickets = async () => {
-    if (!selected) return;
-    setBusy("related");
-    const rows = await getRelatedTickets(selected.id);
-    setBusy(null);
-    setRelatedTickets(rows.filter((row) => row.id !== selected.id));
-    setShowRelated(true);
-  };
-
   return (
     <AnimatePresence>
       {selected && (
@@ -215,14 +243,39 @@ export function TicketDecisionPanel({
                 <PriorityPill priority={selected.priority} />
               </div>
 
-              <Section icon={Brain} title="AI Insight"><div className="text-sm">{selected.aiInsight}</div></Section>
-
-              {selected.slaRemainingHours < 12 && (
-                <div className="mt-5 p-3 rounded-xl bg-danger-soft text-danger text-sm flex items-start gap-2">
-                  <AlertTriangle className="size-4 mt-0.5 shrink-0" />
-                  <div>{selected.slaAction} ({selected.slaRemainingHours}h of {selected.slaHours}h remaining)</div>
+              <Section icon={Brain} title="AI summary">
+                <div className="text-sm">
+                  {aiSummaryLoading && !aiSummary ? (
+                    <span className="text-muted-foreground">Generating summary…</span>
+                  ) : (
+                    aiSummary?.summary || selected.aiInsight
+                  )}
                 </div>
-              )}
+                <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+                  {aiSummary && (
+                    <>
+                      <span>
+                        {aiSummary.model === "azure-openai" ? "LLM" : "Template"} · over{" "}
+                        {aiSummary.message_count} message{aiSummary.message_count === 1 ? "" : "s"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void refreshAiSummary()}
+                        disabled={aiSummaryLoading}
+                        className="underline hover:text-foreground disabled:opacity-50"
+                      >
+                        {aiSummaryLoading ? "Refreshing…" : "Refresh"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </Section>
+
+              <SlaCountdown
+                slaHours={selected.slaHours}
+                slaRemainingHours={selected.slaRemainingHours}
+                slaAction={selected.slaAction}
+              />
 
               <Section icon={User} title="Employee Snapshot">
                 <div className="grid grid-cols-2 gap-3 mt-1 text-xs">
@@ -233,15 +286,55 @@ export function TicketDecisionPanel({
                 </div>
               </Section>
 
-              <Section icon={Sparkles} title="Recommended Actions">
-                <ul className="space-y-2">
-                  {selected.suggestedActions.map((action) => (
-                    <li key={action} className="text-sm flex items-start gap-2">
-                      <ArrowUpRight className="size-3.5 mt-0.5 text-accent shrink-0" />
-                      <span>{action}</span>
-                    </li>
-                  ))}
-                </ul>
+              <Section icon={Sparkles} title="Suggested actions">
+                <div className="flex flex-wrap gap-2">
+                  <ActionChip
+                    label="Escalate"
+                    tone="danger"
+                    busy={busy === "escalate"}
+                    disabled={busy !== null}
+                    onClick={() => void runEscalateWorkflow()}
+                  />
+                  <ActionChip
+                    label="Schedule 1:1"
+                    tone="neutral"
+                    busy={busy === "checkin"}
+                    disabled={busy !== null}
+                    onClick={() => void runScheduleWorkflow()}
+                  />
+                  <ActionChip
+                    label="Loop in manager"
+                    tone="neutral"
+                    busy={busy === "internal-note"}
+                    disabled={busy !== null}
+                    onClick={() => {
+                      const note =
+                        "Looping in manager for awareness — please review this thread and coordinate next steps.";
+                      setInternalNoteText(note);
+                    }}
+                  />
+                  <ActionChip
+                    label={selected.status === "resolved" ? "Reopen later" : "Close ticket"}
+                    tone="emerald"
+                    busy={busy === "close"}
+                    disabled={busy !== null || selected.status === "resolved"}
+                    onClick={() => void runCloseWorkflow()}
+                  />
+                </div>
+                {selected.suggestedActions.length > 0 && (
+                  <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
+                    {selected.suggestedActions.map((action) => (
+                      <li key={action} className="flex items-start gap-1.5">
+                        <ArrowUpRight className="size-3 mt-0.5 text-accent shrink-0" />
+                        <span>{action}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Section>
+
+              <Section icon={Activity} title="Sentiment trajectory">
+                <SentimentSparkline history={sentimentHistory} />
               </Section>
 
               <div className="mt-6 space-y-4">
@@ -261,28 +354,24 @@ export function TicketDecisionPanel({
                 </div>
               </Section>
 
-              {selected.duplicateCount > 0 && (
+              {relatedTickets.length > 0 && (
                 <div className="mt-4 p-3 rounded-xl bg-warning-soft text-warning text-sm flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5"><GitBranch className="size-4" /> Similar tickets detected ({selected.duplicateCount})</span>
-                  <button type="button" className="text-xs underline disabled:opacity-60" onClick={() => void loadRelatedTickets()} disabled={busy !== null}>
-                    {busy === "related" ? "Loading..." : "View related issues"}
-                  </button>
+                  <span className="inline-flex items-center gap-1.5">
+                    <GitBranch className="size-4" /> {relatedTickets.length} possibly related ticket
+                    {relatedTickets.length === 1 ? "" : "s"} detected
+                  </span>
                 </div>
               )}
-              {showRelated && (
-                <Section icon={GitBranch} title="Related Issues">
-                  {relatedTickets.length === 0 ? (
-                    <div className="text-xs text-muted-foreground">No related tickets were found.</div>
-                  ) : (
-                    <ul className="space-y-2">
-                      {relatedTickets.map((row) => (
-                        <li key={row.id} className="text-xs rounded-md border border-border p-2">
-                          <div className="font-medium">{row.id}</div>
-                          <div className="text-muted-foreground mt-1 line-clamp-2">{row.query}</div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+              {relatedTickets.length > 0 && (
+                <Section icon={GitBranch} title="Possibly related tickets">
+                  <ul className="space-y-2">
+                    {relatedTickets.map((row) => (
+                      <li key={row.id} className="text-xs rounded-md border border-border p-2">
+                        <div className="font-medium">{row.id}</div>
+                        <div className="text-muted-foreground mt-1 line-clamp-2">{row.query}</div>
+                      </li>
+                    ))}
+                  </ul>
                 </Section>
               )}
 
@@ -439,5 +528,161 @@ function FilterPill({ active, onClick, label }: { active: boolean; onClick: () =
     >
       {label}
     </button>
+  );
+}
+
+function ActionChip({
+  label,
+  tone,
+  busy,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  tone: "danger" | "neutral" | "emerald";
+  busy: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const toneCls =
+    tone === "danger"
+      ? "bg-danger-soft text-danger border-danger/30 hover:bg-danger-soft/80"
+      : tone === "emerald"
+        ? "bg-emerald-soft text-emerald border-emerald/30 hover:bg-emerald-soft/80"
+        : "bg-card text-foreground border-border hover:bg-secondary";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "text-xs px-3 py-1.5 rounded-md border font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+        toneCls,
+      )}
+    >
+      {busy ? "Working…" : label}
+    </button>
+  );
+}
+
+function SlaCountdown({
+  slaHours,
+  slaRemainingHours,
+  slaAction,
+}: {
+  slaHours: number;
+  slaRemainingHours: number;
+  slaAction: string | null;
+}) {
+  const [mountedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const elapsedHours = (now - mountedAt) / 3_600_000;
+  const liveRemaining = slaRemainingHours - elapsedHours;
+  const pct = Math.max(0, Math.min(100, (liveRemaining / slaHours) * 100));
+  const breached = liveRemaining <= 0;
+  const danger = breached || pct < 25;
+  const warn = !danger && pct < 50;
+
+  return (
+    <div
+      className={cn(
+        "mt-5 p-3 rounded-xl text-sm border",
+        danger
+          ? "bg-danger-soft text-danger border-danger/40"
+          : warn
+            ? "bg-warning-soft text-warning border-warning/40"
+            : "bg-secondary/40 text-foreground border-border",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="size-4 mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <div className="font-medium">
+            {breached ? "SLA breached" : `SLA: ${formatHours(liveRemaining)} remaining`}
+          </div>
+          <div className="text-xs mt-0.5 opacity-90">
+            {danger && slaAction ? slaAction : `Window: ${slaHours}h total`}
+          </div>
+          <div className="mt-2 h-1.5 rounded-full bg-card/60 overflow-hidden">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all",
+                danger ? "bg-danger" : warn ? "bg-warning" : "bg-emerald",
+              )}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatHours(hours: number): string {
+  if (hours <= 0) return "0h";
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m`;
+  const whole = Math.floor(hours);
+  const minutes = Math.round((hours - whole) * 60);
+  if (minutes === 0) return `${whole}h`;
+  return `${whole}h ${minutes}m`;
+}
+
+function SentimentSparkline({ history }: { history: TicketSentimentHistory | null }) {
+  if (!history) {
+    return <div className="text-xs text-muted-foreground">Loading sentiment trajectory…</div>;
+  }
+  const points = history.points.filter((p) => p.score != null);
+  if (points.length === 0) {
+    return (
+      <div className="text-xs text-muted-foreground">
+        No sentiment signals since this ticket opened.
+      </div>
+    );
+  }
+  const latest = points[points.length - 1];
+  const first = points[0];
+  const delta = (latest.score ?? 0) - (first.score ?? 0);
+  const deltaTone = delta > 5 ? "text-emerald" : delta < -5 ? "text-danger" : "text-muted-foreground";
+  return (
+    <div>
+      <div className="h-16">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={points} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+            <Line
+              type="monotone"
+              dataKey="score"
+              stroke="hsl(var(--accent))"
+              strokeWidth={2}
+              dot={false}
+            />
+            <RechartsTooltip
+              contentStyle={{
+                background: "hsl(var(--card))",
+                border: "1px solid hsl(var(--border))",
+                borderRadius: 8,
+                fontSize: 11,
+              }}
+              formatter={(v: number) => [`${v}`, "Score"]}
+              labelFormatter={(label) => String(label)}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[11px]">
+        <span className="text-muted-foreground">
+          {points.length} day{points.length === 1 ? "" : "s"} of data since ticket opened
+        </span>
+        <span className={deltaTone}>
+          {delta > 0 ? "+" : ""}
+          {Math.round(delta)} since ticket open
+        </span>
+      </div>
+    </div>
   );
 }

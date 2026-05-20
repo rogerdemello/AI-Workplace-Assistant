@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, UUID, ForeignKey, DateTime, Enum as SQLEnum, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, Integer, String, UUID, ForeignKey, DateTime, Enum as SQLEnum, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime, timedelta
@@ -42,6 +42,10 @@ class Ticket(Base):
     resolved_at = Column(DateTime, nullable=True)
     hash = Column(String(64), nullable=True, index=True)
     sentiment_score = Column(Integer, nullable=True)
+    # When True, HR-facing responses must not expose the submitter. Default
+    # False so existing tickets keep their current behaviour. Set during
+    # ticket creation from the complaint flow's anonymity slot.
+    is_anonymous = Column(Boolean, nullable=False, default=False, server_default="0")
 
     __table_args__ = (
         UniqueConstraint("user_id", "hash", name="uq_ticket_user_hash"),

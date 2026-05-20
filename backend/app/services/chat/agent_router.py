@@ -13,6 +13,11 @@ _NEG_TONE = re.compile(
     r"\b(stress|anxious|anxiety|burnout|overwhelmed|exhausted|can't cope|depressed|sad)\b",
     re.I,
 )
+_PRODUCTIVITY_HINT = re.compile(
+    r"\b(draft (?:an? )?email|send (?:an? )?email|reply to|reschedule|meeting prep|"
+    r"agenda|timesheet|log hours|standup notes|follow[- ]?up email)\b",
+    re.I,
+)
 
 
 def _compound_view(orchestrator: Any) -> Dict[str, Any]:
@@ -50,6 +55,16 @@ class AgentRouter:
         )
         if proactive_ok:
             supplementary.append(AgentName.PROACTIVE)
+
+        # Productivity overlay fires only on explicit work-task language so it
+        # doesn't pile noise onto HR replies. Gated by capability flag at
+        # dispatch time (see _DISPATCH check below).
+        productivity_ok = (
+            bool(_PRODUCTIVITY_HINT.search(ml))
+            and intent not in {"reminder", "leave_request", "ticket_create", "complaint"}
+        )
+        if productivity_ok:
+            supplementary.append(AgentName.PRODUCTIVITY)
 
         entities = self._extract_entities(message=ml, compound=c)
         agents = [a.value for a in supplementary]

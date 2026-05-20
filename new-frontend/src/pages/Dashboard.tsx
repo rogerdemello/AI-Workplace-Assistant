@@ -1,6 +1,11 @@
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Sparkline, BarMini } from "@/components/charts";
 import { EmotionMixTrendCard } from "@/components/analytics/EmotionMixTrendCard";
+import { AlertsPanelCard } from "@/components/dashboard/AlertsPanelCard";
+import { AtRiskEmployeesCard } from "@/components/dashboard/AtRiskEmployeesCard";
+import { DepartmentHeatmapCard } from "@/components/dashboard/DepartmentHeatmapCard";
+import { KpiStatsRow } from "@/components/dashboard/KpiStatsRow";
+import { SentimentTrendsCard } from "@/components/dashboard/SentimentTrendsCard";
 import { getDashboardData, getRecentActivity } from "@/lib/services";
 import type { ActivityItem } from "@/lib/services";
 import {
@@ -268,6 +273,8 @@ export default function Dashboard() {
           </motion.div>
         )}
 
+        <KpiStatsRow />
+
         {/* KPI row */}
         <div className="grid md:grid-cols-4 gap-4">
           <Kpi
@@ -302,6 +309,15 @@ export default function Dashboard() {
             chart={<BarMini data={ticketTrend} />}
             to="/tickets"
           />
+        </div>
+
+        <SentimentTrendsCard />
+
+        <DepartmentHeatmapCard />
+
+        <div className="grid lg:grid-cols-2 gap-4">
+          <AtRiskEmployeesCard limit={10} />
+          <AlertsPanelCard limit={30} />
         </div>
 
         <EmotionMixTrendCard
@@ -379,7 +395,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="grid md:grid-cols-2 gap-4">
-            {(data?.insights || []).map((ins, i) => {
+            {(data?.insights || []).slice(0, 5).map((ins, i) => {
               const t = toneStyles[ins.tone];
               const Icon = t.icon;
               return (

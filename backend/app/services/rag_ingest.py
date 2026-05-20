@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 from typing import List, Optional
 from uuid import UUID, uuid4
 from sqlalchemy.orm import Session
@@ -9,8 +10,14 @@ from ..ai_client import get_ai_client
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 100
+# Sentence-aware chunking targets these word counts. Smaller chunks improve
+# retrieval precision on short questions; the overlap preserves context across
+# boundaries so an answer split across two chunks is still findable.
+CHUNK_TARGET_WORDS = 400
+CHUNK_OVERLAP_WORDS = 50
+CHUNK_MAX_WORDS = 600  # hard cap so a paragraph without periods can't blow up
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'\(])")
 
 
 class RAGIngestService:
@@ -88,14 +95,49 @@ class RAGIngestService:
             raise ValueError(f"Failed to extract DOCX: {str(e)}")
     
     def _chunk_text(self, text: str) -> List[str]:
-        chunks = []
-        start = 0
-        text_length = len(text)
-        
-        while start < text_length:
-            end = start + CHUNK_SIZE
-            chunk = text[start:end]
-            chunks.append(chunk)
-            start = end - CHUNK_OVERLAP
-        
+        """Sentence-aware chunking with word-count target and overlap.
+
+        Each chunk is a list of consecutive sentences whose total word count is
+        close to ``CHUNK_TARGET_WORDS``. Adjacent chunks share the last
+        ``CHUNK_OVERLAP_WORDS`` of the previous chunk so a relevant span isn't
+        split unanswerably.
+        """
+        normalized = re.sub(r"\s+", " ", text or "").strip()
+        if not normalized:
+            return []
+
+        sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(normalized) if s.strip()]
+        if not sentences:
+            sentences = [normalized]
+
+        chunks: List[str] = []
+        current: List[str] = []
+        current_word_count = 0
+
+        for sentence in sentences:
+            words_in_sentence = len(sentence.split())
+            if (
+                current_word_count + words_in_sentence > CHUNK_TARGET_WORDS
+                and current
+            ) or current_word_count >= CHUNK_MAX_WORDS:
+                chunks.append(" ".join(current))
+                # Seed the next chunk with an overlap drawn from the tail of
+                # the previous one to preserve cross-boundary context.
+                tail_words: List[str] = []
+                tail_count = 0
+                for s in reversed(current):
+                    s_words = s.split()
+                    if tail_count + len(s_words) > CHUNK_OVERLAP_WORDS and tail_words:
+                        break
+                    tail_words.insert(0, s)
+                    tail_count += len(s_words)
+                current = list(tail_words)
+                current_word_count = tail_count
+
+            current.append(sentence)
+            current_word_count += words_in_sentence
+
+        if current:
+            chunks.append(" ".join(current))
+
         return chunks

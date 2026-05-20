@@ -55,12 +55,18 @@ def get_ticket_action_service(db: Session = Depends(get_db)) -> TicketActionServ
     return TicketActionService(db)
 
 def enrich_ticket_response(ticket, service: TicketService) -> dict:
-    """Enrich ticket response with SLA information."""
-    from datetime import datetime
-    
+    """Enrich ticket response with SLA information.
+
+    For anonymous tickets, the submitter ``user_id`` is scrubbed before the
+    response leaves the server. The flag itself is preserved so the UI can
+    render an "Anonymous reporter" placeholder explicitly.
+    """
+    is_anonymous = bool(getattr(ticket, "is_anonymous", False))
+
     response = {
         "id": ticket.id,
-        "user_id": ticket.user_id,
+        "user_id": None if is_anonymous else ticket.user_id,
+        "is_anonymous": is_anonymous,
         "query": ticket.query,
         "category": ticket.category,
         "status": ticket.status,
@@ -70,7 +76,7 @@ def enrich_ticket_response(ticket, service: TicketService) -> dict:
         "updated_at": ticket.updated_at,
         "resolved_at": ticket.resolved_at,
     }
-    
+
     # Add SLA information
     if ticket.status not in [TicketStatus.resolved, TicketStatus.closed]:
         response["sla_due_at"] = service.get_sla_due_at(ticket)
@@ -78,7 +84,7 @@ def enrich_ticket_response(ticket, service: TicketService) -> dict:
     else:
         response["sla_due_at"] = None
         response["sla_warning"] = False
-    
+
     return response
 
 
@@ -715,3 +721,143 @@ def trigger_sla_scan():
     from ...services.scheduler import check_and_escalate_sla_breached_tickets
     result = check_and_escalate_sla_breached_tickets()
     return result
+
+
+@router.get("/{ticket_id}/ai-summary")
+def get_ticket_ai_summary(
+    ticket_id: UUID,
+    refresh: bool = False,
+    current_user=Depends(require_roles(["hr", "admin"])),
+    service: TicketService = Depends(get_ticket_service),
+):
+    """LLM-generated summary of the ticket and recent thread.
+
+    Result is cached in Redis keyed on ``ticket_id:updated_at``; passing
+    ``refresh=true`` forces regeneration. Falls back to a deterministic
+    template summary if the LLM call fails or Azure OpenAI is unconfigured.
+    """
+    import json
+    from ...cache import get_cached, set_cached
+    from ...ai_client import get_ai_client
+    from ...config import settings
+
+    ticket = service.get_ticket(ticket_id, current_user.id, True)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    updated_marker = (ticket.updated_at or ticket.created_at or datetime.utcnow()).isoformat()
+    cache_key = f"ticket_ai_summary:{ticket_id}:{updated_marker}"
+    if not refresh:
+        cached = get_cached(cache_key)
+        if cached:
+            return cached
+
+    messages = service.list_messages(ticket_id, user_id=current_user.id, is_hr=True) or []
+    thread_lines: List[str] = []
+    for m in messages[-20:]:
+        role = "HR" if getattr(m, "sender_id", None) else "Employee"
+        is_internal = bool(getattr(m, "is_internal", False))
+        if is_internal:
+            role = "HR (internal note)"
+        text = (getattr(m, "message_text", "") or "").strip().replace("\n", " ")
+        if text:
+            thread_lines.append(f"- {role}: {text[:400]}")
+
+    body = ticket.query or ""
+    prompt_user = (
+        f"Ticket category: {ticket.category}\n"
+        f"Priority: {ticket.priority}\n"
+        f"Status: {ticket.status}\n"
+        f"Opening query: {body[:600]}\n\n"
+        f"Recent thread (most recent last):\n" + ("\n".join(thread_lines) if thread_lines else "(no replies yet)")
+    )
+
+    use_mock = not settings.AZURE_OPENAI_API_KEY or settings.AZURE_OPENAI_API_KEY == "mock-key"
+
+    summary_text: Optional[str] = None
+    if not use_mock:
+        try:
+            client = get_ai_client(use_mock=False)
+            response = client.chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an HR operations assistant. Write a concise 2-3 sentence summary "
+                            "of an HR ticket for an HR business partner. Focus on what the employee "
+                            "needs and the single most useful next action. Plain text, no markdown."
+                        ),
+                    },
+                    {"role": "user", "content": prompt_user},
+                ],
+                temperature=0.2,
+                max_tokens=200,
+            )
+            summary_text = (
+                (response.get("choices") or [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+            )
+        except Exception:
+            logger.warning("Ticket AI summary failed; falling back to template", exc_info=True)
+
+    if not summary_text:
+        summary_text = (
+            f"{ticket.category.title()} ticket at {ticket.priority} priority — "
+            f"{body[:160].rstrip()}. "
+            f"{'Awaiting first HR response.' if not thread_lines else 'See thread for the latest context.'}"
+        )
+
+    payload = {
+        "ticket_id": str(ticket_id),
+        "summary": summary_text,
+        "generated_at": datetime.utcnow().isoformat(),
+        "model": "azure-openai" if not use_mock and summary_text else "template",
+        "message_count": len(messages),
+    }
+    set_cached(cache_key, payload, ttl=3600)
+    return payload
+
+
+@router.get("/{ticket_id}/sentiment-history")
+def get_ticket_sentiment_history(
+    ticket_id: UUID,
+    current_user=Depends(require_roles(["hr", "admin"])),
+    service: TicketService = Depends(get_ticket_service),
+):
+    """Sentiment trajectory of the ticket creator since the ticket was opened.
+
+    Returns daily averages of SentimentLog.score for ``ticket.user_id`` since
+    ``ticket.created_at``. Empty list if no logs exist.
+    """
+    from sqlalchemy import func
+    from ...models.sentiment_log import SentimentLog
+
+    ticket = service.get_ticket(ticket_id, current_user.id, True)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    since = ticket.created_at or (datetime.utcnow() - timedelta(days=14))
+    day = func.date(SentimentLog.created_at).label("day")
+    rows = (
+        service.db.query(day, func.avg(SentimentLog.score).label("avg_score"), func.count(SentimentLog.id).label("n"))
+        .filter(SentimentLog.employee_id == ticket.user_id, SentimentLog.created_at >= since)
+        .group_by(day)
+        .order_by(day)
+        .all()
+    )
+
+    return {
+        "ticket_id": str(ticket_id),
+        "user_id": str(ticket.user_id),
+        "since": since.isoformat(),
+        "points": [
+            {
+                "date": str(r.day),
+                "score": round(float(r.avg_score), 1) if r.avg_score is not None else None,
+                "sample_size": int(r.n),
+            }
+            for r in rows
+        ],
+    }

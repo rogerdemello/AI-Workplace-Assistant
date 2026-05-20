@@ -15,3 +15,8 @@ pytest==7.4.4
 pytest-cov==4.1.0
 supabase==2.10.0
 apscheduler==3.10.4
+sentry-sdk[fastapi]==2.18.0
+celery[redis]==5.4.0
+pypdf==4.3.1
+python-docx==1.1.2
+rank-bm25==0.2.2

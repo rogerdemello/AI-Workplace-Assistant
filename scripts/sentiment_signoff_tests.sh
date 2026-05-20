@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Automated checks for docs/STAGING_SIGNOFF_SENTIMENT.md (pytest + frontend build).
+# Automated checks for sentiment and analytics readiness (pytest + frontend build).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 

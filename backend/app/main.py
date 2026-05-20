@@ -11,7 +11,12 @@ from typing import Optional
 
 from .config import settings
 from .core.feature_flags import get_feature_flags
+from .core.observability import init_sentry
+from .core.schema_audit import audit_schema
 from .database import engine, Base, SessionLocal
+
+# Initialize Sentry as early as possible so import-time errors are captured.
+init_sentry()
 from .models import hr_alert as _hr_alert_model  # noqa: F401 — register HrAlert with Base.metadata
 from .models import leave_request as _leave_request_model  # noqa: F401 — register LeaveRequest with Base.metadata
 from .models import personal_fact as _personal_fact_model  # noqa: F401 — register PersonalFact with Base.metadata
@@ -19,6 +24,8 @@ from .models import onboarding_buddy as _onboarding_buddy_model  # noqa: F401 �
 from .models import ticket_action_log as _ticket_action_log_model  # noqa: F401 — register TicketActionLog with Base.metadata
 from .models import hr_notification as _hr_notification_model  # noqa: F401 — register HrNotification with Base.metadata
 from .models import automation_rule as _automation_rule_model  # noqa: F401 — register AutomationRule with Base.metadata
+from .models import audit_log as _audit_log_model  # noqa: F401 — register AuditLog with Base.metadata
+from .models import whatsapp_link as _whatsapp_link_model  # noqa: F401 — register WhatsappLink with Base.metadata
 from .api.v1.auth import router as auth_router
 from .api.v1.demo_auth import router as demo_auth_router
 from .api.v1.chat import router as chat_router
@@ -49,6 +56,8 @@ from .api.v1.automations import router as automations_router
 from .api.v1.realtime import router as realtime_router
 from .api.v1.workplace import router as workplace_router
 from .api.v1.webhooks import router as webhooks_router
+from .api.v1.sso import router as sso_router
+from .api.v1.whatsapp import router as whatsapp_link_router
 from .routes import hr_auth as hr_auth_routes
 from .routes import hr_dashboard as hr_dashboard_routes
 from .routes import hr_tickets as hr_tickets_routes
@@ -59,6 +68,7 @@ from .services.scheduler import start_scheduler, stop_scheduler
 from .services.analytics import register_event_driven_analytics
 from .middleware.rate_limit import rate_limit_middleware
 from .middleware.budget import budget_middleware
+from .middleware.audit import audit_log_middleware
 from .middleware.security import (
     security_headers_middleware,
     sql_injection_protection_middleware,
@@ -75,22 +85,25 @@ logger = logging.getLogger(__name__)
 
 
 async def _alert_background_loop() -> None:
-    """Periodic proactive wellbeing scan → `hr_alerts` (default: daily)."""
+    """Periodic proactive wellbeing scan → `hr_alerts` (default: daily).
+
+    When ``CELERY_BROKER_URL`` is set, the scan is dispatched to a worker so
+    the API process keeps a tight event loop. Without a broker we fall back
+    to running the scan in-process, identical to pre-Celery behaviour.
+    """
     if os.getenv("ENABLE_ALERT_BACKGROUND", "true").lower() not in ("1", "true", "yes"):
         return
     interval = int(os.getenv("ALERT_SCAN_INTERVAL_SECONDS", "86400"))
     await asyncio.sleep(20)
-    from .api.v1.hr_alerts import _store_from_wellbeing
+
+    from .workers.celery_app import enqueue
+    from .workers.tasks import run_proactive_wellbeing_scan
 
     while True:
-        db = SessionLocal()
         try:
-            _store_from_wellbeing(db)
+            enqueue(run_proactive_wellbeing_scan)
         except Exception:
-            logger.exception("Background alert scan failed")
-            db.rollback()
-        finally:
-            db.close()
+            logger.exception("Background alert scan failed (non-fatal)")
         await asyncio.sleep(max(60, interval))
 
 
@@ -115,6 +128,13 @@ async def lifespan(app: FastAPI):
             "Database initialization failed at startup. The API will boot but "
             "DB-backed endpoints will fail until connectivity is restored."
         )
+
+    # Warn loudly if the DB schema has drifted from alembic head.
+    # Non-fatal — this never mutates the database.
+    try:
+        audit_schema(engine, logger)
+    except Exception:
+        logger.exception("Schema audit skipped (non-fatal)")
 
     if flags.enable_analytics_events:
         register_event_driven_analytics()
@@ -184,6 +204,9 @@ app.middleware("http")(rate_limit_middleware)
 # Budget tracking middleware (for AI endpoints)
 app.middleware("http")(budget_middleware)
 
+# Audit log for state-changing API calls on sensitive surfaces.
+app.middleware("http")(audit_log_middleware)
+
 
 # Request logging middleware
 @app.middleware("http")
@@ -211,6 +234,62 @@ async def health_check():
         "status": "ok",
         "version": "1.0.0"
     }
+
+
+@app.get("/healthz")
+async def liveness_probe():
+    """Liveness probe — process is up. No dependency checks (Kubernetes-style)."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readiness_probe():
+    """Readiness probe — process can serve requests. Checks DB; Redis is best-effort.
+
+    Returns 503 when the DB is unreachable. Redis and Azure OpenAI are optional
+    and never fail the probe (they degrade gracefully at the call site).
+    """
+    from sqlalchemy import text
+
+    components: dict[str, dict[str, str]] = {}
+    overall_ok = True
+
+    # DB — required
+    try:
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+        finally:
+            db.close()
+        components["database"] = {"status": "ok"}
+    except Exception as exc:
+        components["database"] = {"status": "error", "error": type(exc).__name__}
+        overall_ok = False
+
+    # Redis — optional
+    try:
+        from .cache import _redis_client
+        if _redis_client is None:
+            components["redis"] = {"status": "disabled"}
+        else:
+            _redis_client.ping()
+            components["redis"] = {"status": "ok"}
+    except Exception as exc:
+        components["redis"] = {"status": "degraded", "error": type(exc).__name__}
+
+    # Azure OpenAI — optional, config-only check (no live API call)
+    azure_configured = bool(
+        settings.AZURE_OPENAI_API_KEY
+        and settings.AZURE_OPENAI_API_KEY != "mock-key"
+        and settings.AZURE_OPENAI_ENDPOINT
+        and not settings.AZURE_OPENAI_ENDPOINT.startswith("https://mock.")
+    )
+    components["azure_openai"] = {"status": "ok" if azure_configured else "mock"}
+
+    payload = {"status": "ok" if overall_ok else "error", "components": components}
+    if not overall_ok:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 # Include API routers with versioned routes
@@ -244,6 +323,8 @@ app.include_router(automations_router, prefix="/api/v1")
 app.include_router(realtime_router, prefix="/api/v1")
 app.include_router(workplace_router, prefix="/api/v1")
 app.include_router(webhooks_router, prefix="/api/v1")
+app.include_router(sso_router, prefix="/api/v1")
+app.include_router(whatsapp_link_router, prefix="/api/v1")
 app.include_router(hr_auth_routes.router, prefix="/hr")
 app.include_router(hr_auth_routes.legacy_router, prefix="/api/v1")
 app.include_router(hr_dashboard_routes.router, prefix="/hr")

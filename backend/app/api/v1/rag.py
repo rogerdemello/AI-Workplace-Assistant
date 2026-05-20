@@ -77,6 +77,7 @@ def list_documents(
             title=doc.title,
             is_active=doc.is_active,
             created_at=doc.created_at,
+            updated_at=doc.updated_at,
             chunks_count=len(doc.chunks)
         )
         for doc in documents

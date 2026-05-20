@@ -1,4 +1,5 @@
 import hashlib
+import re
 import numpy as np
 from typing import List, Dict, Optional
 from uuid import UUID
@@ -16,8 +17,28 @@ TOP_K = 3
 CHUNK_CACHE_TTL = 3600
 RETRIEVAL_CACHE_TTL = 300
 KEYWORD_FALLBACK_THRESHOLD = 0.15
+# Cache chunk embeddings for a week. Chunk content is immutable per ingest
+# (chunks are recreated on re-upload), so the key is safe to keep cold.
+EMBEDDING_CACHE_TTL = 7 * 24 * 3600
 
 logger = logging.getLogger(__name__)
+
+_BM25_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_BM25_STOP_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "must", "shall", "can", "of", "in", "for",
+    "on", "with", "at", "by", "from", "as", "into", "and", "or", "but",
+    "if", "to", "this", "that", "these", "those", "it", "its",
+}
+
+
+def _bm25_tokenize(text: str) -> List[str]:
+    return [
+        tok
+        for tok in (m.group(0).lower() for m in _BM25_TOKEN_RE.finditer(text or ""))
+        if tok not in _BM25_STOP_WORDS
+    ]
 
 FALLBACK_SUMMARIES = {
     "leave": {
@@ -120,18 +141,31 @@ class RAGRetrieveService:
             )
 
         chunks = self._get_active_chunks()
+        if not chunks:
+            set_cached(cache_key, [], RETRIEVAL_CACHE_TTL)
+            return []
+
+        # Build BM25 corpus from the current active chunks. The library is
+        # tiny and recomputation is cheap (chunks count is small), so building
+        # per query keeps the implementation simple and correct on edits.
+        keyword_scores = self._bm25_scores(query, chunks)
+
+        # Normalise BM25 to 0..1 so the weighted sum with cosine similarity
+        # stays in a comparable range across queries.
+        max_kw = max(keyword_scores) if keyword_scores else 0.0
+        normalised_kw = [
+            (s / max_kw) if max_kw > 0 else 0.0 for s in keyword_scores
+        ]
 
         results = []
-        for chunk in chunks:
-            chunk_embedding = self._get_chunk_embedding(chunk)
-
+        for idx, chunk in enumerate(chunks):
             vector_sim = 0.0
             if embedding_available and query_embedding is not None:
                 chunk_embedding = self._get_chunk_embedding(chunk)
                 if chunk_embedding is not None:
                     vector_sim = self._cosine_similarity(query_embedding, chunk_embedding)
 
-            keyword_sim = self._keyword_similarity(query, chunk.content)
+            keyword_sim = normalised_kw[idx]
 
             similarity = (0.7 * vector_sim) + (0.3 * keyword_sim)
             if not embedding_available:
@@ -158,6 +192,24 @@ class RAGRetrieveService:
         set_cached(cache_key, final_results, RETRIEVAL_CACHE_TTL)
 
         return final_results
+
+    def _bm25_scores(self, query: str, chunks: List[DocumentChunk]) -> List[float]:
+        """BM25 score per chunk for ``query``. Falls back to naive overlap if
+        the optional ``rank_bm25`` package isn't installed."""
+        try:
+            from rank_bm25 import BM25Okapi  # type: ignore
+        except ImportError:
+            logger.info("rank_bm25 not installed; using naive overlap for keyword score")
+            return [self._keyword_similarity(query, chunk.content) for chunk in chunks]
+
+        corpus = [_bm25_tokenize(chunk.content) for chunk in chunks]
+        if not any(corpus):
+            return [0.0 for _ in chunks]
+        bm25 = BM25Okapi(corpus)
+        query_tokens = _bm25_tokenize(query)
+        if not query_tokens:
+            return [0.0 for _ in chunks]
+        return list(bm25.get_scores(query_tokens))
 
     def _classify_query(self, query: str) -> str:
         q = query.lower()
@@ -232,10 +284,22 @@ When answering HR policy questions:
         }
     
     def _get_chunk_embedding(self, chunk: DocumentChunk) -> Optional[List[float]]:
+        """Embedding for a chunk. Cached in Redis under the chunk's UUID so
+        we don't re-embed every chunk on every query — the original
+        implementation made an Azure OpenAI call per chunk per query, which is
+        prohibitively slow and expensive at any non-trivial corpus size.
+        """
+        cache_key = f"rag:chunk_embedding:{chunk.id}"
+        cached = get_cached(cache_key)
+        if isinstance(cached, list) and cached:
+            return cached
         try:
-            return self.ai_client.embeddings(chunk.content[:1000])
+            vector = self.ai_client.embeddings(chunk.content[:1000])
         except Exception:
             return None
+        if vector:
+            set_cached(cache_key, vector, EMBEDDING_CACHE_TTL)
+        return vector
     
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         if not vec1 or not vec2:

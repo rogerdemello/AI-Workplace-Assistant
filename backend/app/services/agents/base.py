@@ -35,3 +35,7 @@ class AgentResult:
     payload: Dict[str, Any] = field(default_factory=dict)
     reply_prefix: Optional[str] = None
     reply_suffix: Optional[str] = None
+    # 0.0..1.0 — agent's self-rated confidence that its overlay actually
+    # improves the response. The merger drops overlays under
+    # ``MIN_OVERLAY_CONFIDENCE`` so noisy specialists never bury the HR voice.
+    confidence: float = 1.0

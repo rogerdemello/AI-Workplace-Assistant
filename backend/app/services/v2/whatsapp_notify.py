@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ...config import settings
 from ...models.user import User
+from ...models.whatsapp_link import WhatsappLink
 from .capabilities import reverse_whatsapp_email_to_phone
 
 logger = logging.getLogger(__name__)
@@ -45,10 +46,21 @@ def send_whatsapp_to_user(db: Session, user_id: UUID, body: str) -> bool:
     if not user or not user.email:
         return False
 
-    rev = reverse_whatsapp_email_to_phone(settings.WHATSAPP_USER_MAP)
-    phone_key = rev.get(user.email.strip().lower())
-    if not phone_key:
-        return False
+    # Prefer the user's self-served WhatsApp link over the legacy env-var map.
+    # The dynamic table is updated as employees pair their phones in-app;
+    # WHATSAPP_USER_MAP stays as a demo / fallback path.
+    link = (
+        db.query(WhatsappLink)
+        .filter(WhatsappLink.user_id == user_id, WhatsappLink.status == "linked")
+        .first()
+    )
+    if link and link.phone_e164:
+        phone_key = link.phone_e164.lstrip("+")
+    else:
+        rev = reverse_whatsapp_email_to_phone(settings.WHATSAPP_USER_MAP)
+        phone_key = rev.get(user.email.strip().lower())
+        if not phone_key:
+            return False
 
     to_uri = _twilio_whatsapp_uri(phone_key)
     from_uri = _twilio_whatsapp_uri(from_raw)

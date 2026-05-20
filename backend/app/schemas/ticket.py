@@ -53,7 +53,10 @@ class TicketMessageCreate(BaseModel):
 
 class TicketResponse(BaseModel):
     id: UUID
-    user_id: UUID
+    # Nullable because anonymous tickets scrub the submitter id before the
+    # response leaves the server. Non-anonymous tickets always populate it.
+    user_id: Optional[UUID] = None
+    is_anonymous: bool = False
     query: str
     category: str
     status: TicketStatus
@@ -64,7 +67,7 @@ class TicketResponse(BaseModel):
     resolved_at: Optional[datetime] = None
     sla_due_at: Optional[datetime] = None
     sla_warning: bool = False
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 class TicketMessageResponse(BaseModel):

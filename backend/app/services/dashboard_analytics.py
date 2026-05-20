@@ -139,6 +139,146 @@ def compute_kpi_overview(db: Session) -> Dict[str, Any]:
     }
 
 
+def compute_kpi_window(db: Session, since: datetime, until: datetime) -> Dict[str, Any]:
+    """KPI counters scoped to a single time window.
+
+    Returns flow metrics — new tickets, resolved tickets, active employees,
+    avg sentiment — within ``[since, until)``. The current at-risk headcount
+    is computed off the latest EmployeeScore rows and is not scoped to the
+    window (snapshot, not flow).
+    """
+    new_tickets = (
+        db.query(func.count(Ticket.id))
+        .filter(Ticket.created_at >= since, Ticket.created_at < until)
+        .scalar()
+        or 0
+    )
+    resolved_tickets = (
+        db.query(func.count(Ticket.id))
+        .filter(
+            _resolved_filter(),
+            Ticket.resolved_at.isnot(None),
+            Ticket.resolved_at >= since,
+            Ticket.resolved_at < until,
+        )
+        .scalar()
+        or 0
+    )
+    active_employees = (
+        db.query(func.count(func.distinct(Conversation.user_id)))
+        .join(Message, Message.conversation_id == Conversation.id)
+        .filter(Message.created_at >= since, Message.created_at < until)
+        .scalar()
+        or 0
+    )
+
+    avg_sentiment_raw = (
+        db.query(func.avg(SentimentLog.score))
+        .filter(SentimentLog.created_at >= since, SentimentLog.created_at < until)
+        .scalar()
+    )
+    avg_sentiment = round(float(avg_sentiment_raw), 1) if avg_sentiment_raw is not None else None
+
+    return {
+        "new_tickets": int(new_tickets),
+        "resolved_tickets": int(resolved_tickets),
+        "active_employees": int(active_employees),
+        "avg_sentiment": avg_sentiment,
+    }
+
+
+def compute_at_risk_count(db: Session, threshold: float = 70.0) -> int:
+    """Number of employees with a current risk_score at or above ``threshold``."""
+    return (
+        db.query(func.count(EmployeeScore.employee_id))
+        .filter(EmployeeScore.risk_score >= threshold)
+        .scalar()
+        or 0
+    )
+
+
+def compute_department_heatmap(db: Session) -> List[Dict[str, Any]]:
+    """Group employees into sentiment buckets per department.
+
+    Buckets are derived from EmployeeScore:
+      * at_risk  — sentiment_score < 40 OR risk_score >= 70
+      * watch    — 40 <= sentiment_score < 60 (and not at_risk)
+      * positive — sentiment_score >= 60 (and not at_risk)
+
+    Users with no EmployeeScore row are counted in ``unknown``. Users with no
+    department are grouped under a synthetic "Unassigned" department.
+    """
+    bucket = case(
+        (
+            or_(EmployeeScore.sentiment_score < 40, EmployeeScore.risk_score >= 70),
+            "at_risk",
+        ),
+        (EmployeeScore.sentiment_score < 60, "watch"),
+        (EmployeeScore.sentiment_score.isnot(None), "positive"),
+        else_="unknown",
+    ).label("bucket")
+
+    rows = (
+        db.query(
+            User.department_id.label("department_id"),
+            bucket,
+            func.count(User.id).label("count"),
+            func.avg(EmployeeScore.sentiment_score).label("avg_sentiment"),
+        )
+        .outerjoin(EmployeeScore, EmployeeScore.employee_id == User.id)
+        .filter(User.role == UserRole.employee, User.status == UserStatus.active)
+        .group_by(User.department_id, "bucket")
+        .all()
+    )
+
+    departments = {str(d.id): d.name for d in db.query(Department).all()}
+
+    by_dept: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        dept_id = str(r.department_id) if r.department_id else "unassigned"
+        dept_name = departments.get(dept_id, "Unassigned") if r.department_id else "Unassigned"
+        entry = by_dept.setdefault(
+            dept_id,
+            {
+                "department_id": dept_id if r.department_id else None,
+                "department_name": dept_name,
+                "positive": 0,
+                "watch": 0,
+                "at_risk": 0,
+                "unknown": 0,
+                "_sentiment_sum": 0.0,
+                "_sentiment_n": 0,
+            },
+        )
+        entry[str(r.bucket)] = int(r.count)
+        if r.avg_sentiment is not None and r.bucket != "unknown":
+            entry["_sentiment_sum"] += float(r.avg_sentiment) * int(r.count)
+            entry["_sentiment_n"] += int(r.count)
+
+    out: List[Dict[str, Any]] = []
+    for entry in by_dept.values():
+        total = entry["positive"] + entry["watch"] + entry["at_risk"] + entry["unknown"]
+        avg = (
+            round(entry["_sentiment_sum"] / entry["_sentiment_n"], 1)
+            if entry["_sentiment_n"] > 0
+            else None
+        )
+        out.append(
+            {
+                "department_id": entry["department_id"],
+                "department_name": entry["department_name"],
+                "total": total,
+                "positive": entry["positive"],
+                "watch": entry["watch"],
+                "at_risk": entry["at_risk"],
+                "unknown": entry["unknown"],
+                "avg_sentiment": avg,
+            }
+        )
+    out.sort(key=lambda d: (-d["at_risk"], -d["total"], d["department_name"] or ""))
+    return out
+
+
 def sentiment_trend_days(db: Session, days: int = 14) -> List[Dict[str, Any]]:
     days = max(1, min(days, 90))
     start = utcnow_naive() - timedelta(days=days - 1)

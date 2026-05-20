@@ -100,3 +100,5 @@ docker-compose.prod.yml
 *.tmp
 *.bak
 *.cache
+.claude/
+.github/

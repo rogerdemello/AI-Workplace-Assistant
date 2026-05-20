@@ -17,6 +17,7 @@ import socket
 import sys
 import urllib.error
 import urllib.request
+from datetime import date, timedelta
 from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parent.parent
@@ -74,6 +75,15 @@ def _hdr(token: str) -> dict[str, str]:
 def main() -> int:
     failures: list[str] = []
     try:
+        # Health probes — these must not require auth.
+        status, hz = _request("GET", "/healthz")
+        assert status == 200 and hz and hz.get("status") == "ok"
+        status, rz = _request("GET", "/readyz")
+        # /readyz returns 503 with components when DB is unreachable; smoke
+        # assumes the API is healthy, so demand 200.
+        assert status == 200 and rz and rz.get("components", {}).get("database", {}).get("status") == "ok"
+        print("[ok] /healthz, /readyz")
+
         # HR
         hr_t = _login("hr1@mark.ai")
         status, me = _request("GET", "/api/v1/auth/me", headers=_hdr(hr_t))
@@ -100,6 +110,43 @@ def main() -> int:
         )
         assert status == 200 and reply.get("response")
         print("[ok] Employee auth, tickets list, unified chat/message")
+
+        # Ticket creation (employee POSTs a low-noise smoke ticket).
+        status, new_ticket = _request(
+            "POST",
+            "/api/v1/tickets",
+            {
+                "query": "Smoke test ticket — please ignore.",
+                "category": "general",
+                "priority": "low",
+            },
+            headers=_hdr(em_t),
+        )
+        assert status in (200, 201) and new_ticket and new_ticket.get("id")
+        print(f"[ok] Ticket creation (id={new_ticket.get('id')})")
+
+        # Leave request (start_date is tomorrow to satisfy the past-date validator).
+        tomorrow = date.today() + timedelta(days=1)
+        day_after = date.today() + timedelta(days=2)
+        status, new_leave = _request(
+            "POST",
+            "/api/v1/leave",
+            {
+                "start_date": tomorrow.isoformat(),
+                "end_date": day_after.isoformat(),
+                "leave_type": "paid",
+                "reason": "Smoke test leave — please ignore.",
+            },
+            headers=_hdr(em_t),
+        )
+        assert status in (200, 201) and new_leave and new_leave.get("id")
+        print(f"[ok] Leave request (id={new_leave.get('id')})")
+
+        # Sentiment trend should reflect the chat message above (best-effort —
+        # the pipeline may be deferred so we only assert the endpoint works).
+        status, trend = _request("GET", "/api/v1/sentiment/trend", headers=_hdr(em_t))
+        assert status == 200 and isinstance(trend, dict)
+        print("[ok] /sentiment/trend reachable")
     except Exception as exc:
         failures.append(str(exc))
         print(f"[fail] {exc}", file=sys.stderr)

@@ -6,6 +6,7 @@ export interface RagDocumentRow {
   title: string;
   is_active: boolean;
   created_at: string;
+  updated_at: string | null;
   chunks_count: number;
 }
 
@@ -17,6 +18,7 @@ export async function listRagDocuments(): Promise<RagDocumentRow[]> {
     title: String(row.title ?? "Untitled"),
     is_active: Boolean(row.is_active),
     created_at: String(row.created_at ?? ""),
+    updated_at: row.updated_at ? String(row.updated_at) : null,
     chunks_count: Number(row.chunks_count ?? 0),
   }));
 }

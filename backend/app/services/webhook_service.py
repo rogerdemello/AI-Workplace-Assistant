@@ -198,21 +198,46 @@ class WebhookService:
         return True
     
     def trigger_webhook(self, event_type: str, payload: Dict) -> List[WebhookDeliveryRecord]:
-        delivery_records = []
-        
+        """Fan out to all matching webhooks.
+
+        With ``CELERY_BROKER_URL`` configured, each delivery is enqueued so
+        the request handler isn't blocked by slow / flaky webhook targets.
+        Without a broker we fall back to the original synchronous loop so
+        small deployments keep working unchanged.
+        """
+        from ..workers.celery_app import enqueue, has_broker
+        from ..workers.tasks import deliver_webhook
+
+        delivery_records: List[WebhookDeliveryRecord] = []
+
         webhooks = self.db.query(Webhook).filter(
             and_(
                 Webhook.event_type == event_type,
                 Webhook.is_active == True,
-                Webhook.status == WebhookStatus.ACTIVE.value
+                Webhook.status == WebhookStatus.ACTIVE.value,
             )
         ).all()
-        
+
+        if has_broker():
+            # Dispatch each delivery to its own worker slot so one slow
+            # endpoint can't gate the others, and so retries happen on the
+            # worker rather than on the API process.
+            for webhook in webhooks:
+                try:
+                    enqueue(deliver_webhook, str(webhook.id), event_type, payload)
+                except Exception:
+                    # Falling back to the inline path keeps the original
+                    # behaviour available even if the broker hiccups.
+                    delivery = self._deliver_webhook(webhook, event_type, payload)
+                    if delivery:
+                        delivery_records.append(delivery)
+            return delivery_records
+
         for webhook in webhooks:
             delivery = self._deliver_webhook(webhook, event_type, payload)
             if delivery:
                 delivery_records.append(delivery)
-        
+
         return delivery_records
     
     async def _deliver_webhook_async(self, webhook: Webhook, event_type: str, payload: Dict) -> WebhookDeliveryRecord:

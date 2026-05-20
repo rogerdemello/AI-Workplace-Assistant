@@ -16,6 +16,12 @@ from ...services.smart_chat import get_smart_chat_service
 from xml.sax.saxutils import escape as xml_escape
 
 from ...services.v2.capabilities import get_capabilities, normalize_whatsapp_sender, parse_whatsapp_user_map
+from ...services.v2.whatsapp_link import (
+    CODE_TTL_MINUTES,
+    consume_code,
+    extract_code,
+    find_user_by_phone,
+)
 from ...services.v2.whatsapp_session import get_or_resume_whatsapp_conversation
 
 router = APIRouter(prefix="/workplace", tags=["workplace-v2"])
@@ -51,6 +57,23 @@ def verify_whatsapp_webhook(
 
 
 def _resolve_whatsapp_user(db: Session, from_number: str) -> User:
+    """Resolve the sender's MARK user.
+
+    Resolution order:
+      1. Dynamic ``whatsapp_links`` table (per-user self-serve binding).
+      2. Static ``WHATSAPP_USER_MAP`` env var (legacy demo-mode mapping).
+      3. ``WHATSAPP_DEFAULT_USER_EMAIL`` fallback (auto-provisions a stub user).
+
+    Anyone who has linked their phone via the in-app flow takes precedence
+    over any env-var mapping for that number — env vars are sticky and prone
+    to drift, but a user's explicit binding is fresh.
+    """
+    dynamic_user_id = find_user_by_phone(db, from_number)
+    if dynamic_user_id is not None:
+        user = db.query(User).filter(User.id == dynamic_user_id).first()
+        if user is not None:
+            return user
+
     normalized = normalize_whatsapp_sender(from_number or "")
     phone_map = parse_whatsapp_user_map(settings.WHATSAPP_USER_MAP)
     mapped_email = phone_map.get(normalized) or settings.WHATSAPP_DEFAULT_USER_EMAIL.strip().lower()
@@ -86,6 +109,35 @@ def receive_whatsapp_message(
     if not incoming_text:
         return Response(
             content="<Response><Message>I did not catch that. Please send your message again.</Message></Response>",
+            media_type="application/xml",
+        )
+
+    # If the message contains a MARK-XXXXXX pairing code, complete the link
+    # *before* doing anything else. This is the one path that mutates the
+    # phone↔user mapping, so it must run before the resolution step below.
+    code = extract_code(incoming_text)
+    if code:
+        link = consume_code(db, code, From)
+        if link is not None:
+            user = db.query(User).filter(User.id == link.user_id).first()
+            name = user.name if user else "there"
+            confirm = (
+                f"Hi {name}, your WhatsApp is now linked to MARK. "
+                "You will receive HR updates here, and you can reply anytime."
+            )
+            return Response(
+                content=f"<Response><Message>{xml_escape(confirm)}</Message></Response>",
+                media_type="application/xml",
+            )
+        # Code was present but invalid / expired / claimed by another phone.
+        # Tell the sender plainly so they can re-issue from the app.
+        return Response(
+            content=(
+                "<Response><Message>"
+                f"That code is not valid or has expired. Open MARK in the app, "
+                f"request a new code, and send it within {CODE_TTL_MINUTES} minutes."
+                "</Message></Response>"
+            ),
             media_type="application/xml",
         )
 

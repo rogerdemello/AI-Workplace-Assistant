@@ -42,6 +42,7 @@ class TicketService:
         category: str,
         priority: TicketPriority,
         sentiment_score: Optional[int] = None,
+        is_anonymous: bool = False,
     ) -> Tuple[Ticket, bool]:
         import hashlib
         normalized = query.lower().strip()
@@ -67,6 +68,7 @@ class TicketService:
             status=TicketStatus.open,
             hash=ticket_hash,
             sentiment_score=sentiment_score,
+            is_anonymous=is_anonymous,
         )
         self.db.add(ticket)
         self.db.commit()

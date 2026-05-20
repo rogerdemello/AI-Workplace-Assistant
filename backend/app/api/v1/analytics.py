@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from ...auth import require_roles
 from ...database import get_db
 from ...services.dashboard_analytics import (
+    compute_at_risk_count,
+    compute_department_heatmap,
     compute_kpi_overview,
+    compute_kpi_window,
     emotion_trend_days,
     emotion_trend_days_for_manager,
     employee_insights_for_manager,
@@ -387,3 +390,85 @@ def get_manager_dashboard_bundle(
 ):
     payload = build_manager_team_bundle_contract(db=db, manager_id=current_user.id, limit=limit)
     return ManagerDashboardBundleResponse(**payload)
+
+
+@router.get("/kpis-with-deltas")
+def get_kpis_with_deltas(
+    days: int = Query(default=7, ge=1, le=90),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """KPI tiles for the HR dashboard with deltas vs the prior equal-length window.
+
+    Returns five metrics (avg_sentiment, active_employees, new_tickets,
+    resolved_tickets, at_risk_count). The first four are flow metrics with a
+    real prior-window comparison. ``at_risk_count`` is a current-state snapshot
+    and therefore has no historical comparison (``previous`` and ``delta`` are
+    null).
+    """
+    from datetime import timedelta
+    from ...core.time import utcnow_naive
+
+    now = utcnow_naive()
+    current_since = now - timedelta(days=days)
+    previous_since = now - timedelta(days=days * 2)
+
+    current = compute_kpi_window(db, since=current_since, until=now)
+    previous = compute_kpi_window(db, since=previous_since, until=current_since)
+
+    def _delta(c, p):
+        if c is None or p is None:
+            return None
+        return round(c - p, 2)
+
+    at_risk = compute_at_risk_count(db)
+
+    metrics = {
+        "avg_sentiment": {
+            "current": current["avg_sentiment"],
+            "previous": previous["avg_sentiment"],
+            "delta": _delta(current["avg_sentiment"], previous["avg_sentiment"]),
+            "unit": "score",
+        },
+        "active_employees": {
+            "current": current["active_employees"],
+            "previous": previous["active_employees"],
+            "delta": _delta(current["active_employees"], previous["active_employees"]),
+            "unit": "count",
+        },
+        "new_tickets": {
+            "current": current["new_tickets"],
+            "previous": previous["new_tickets"],
+            "delta": _delta(current["new_tickets"], previous["new_tickets"]),
+            "unit": "count",
+        },
+        "resolved_tickets": {
+            "current": current["resolved_tickets"],
+            "previous": previous["resolved_tickets"],
+            "delta": _delta(current["resolved_tickets"], previous["resolved_tickets"]),
+            "unit": "count",
+        },
+        "at_risk_count": {
+            "current": at_risk,
+            "previous": None,
+            "delta": None,
+            "unit": "count",
+        },
+    }
+
+    return {
+        "window_days": days,
+        "current_window": {"since": current_since.isoformat(), "until": now.isoformat()},
+        "previous_window": {"since": previous_since.isoformat(), "until": current_since.isoformat()},
+        "metrics": metrics,
+    }
+
+
+@router.get("/departments-heatmap")
+def get_departments_heatmap(
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Department × sentiment bucket counts for the HR dashboard heatmap."""
+    rows = compute_department_heatmap(db)
+    return {"departments": rows}

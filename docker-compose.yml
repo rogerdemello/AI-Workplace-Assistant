@@ -30,6 +30,27 @@ services:
       - ./backend:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  worker:
+    # Opt-in Celery worker. Stays idle unless CELERY_BROKER_URL is set on
+    # the API container too — without a broker the API runs everything
+    # in-process and this service is just a warm spare. See backend/docs/WORKERS.md.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: celery -A app.workers.celery_app.celery worker -l info -Q default --concurrency=4
+    profiles: ["workers"]
+
   frontend:
     build:
       context: ./new-frontend

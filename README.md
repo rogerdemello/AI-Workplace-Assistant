@@ -1,90 +1,182 @@
-# AI Workplace Assistant
+# MARK — AI Workplace Assistant
 
-An AI-powered Friendly HR partner for HR automation and employee workplace support.
+MARK is an AI-native HR and employee intelligence platform: a floating chat
+widget for employees, an analytics dashboard for HR, and a multi-agent
+backend that runs sentiment, proactive nudges, complaint workflows, leave,
+RAG-grounded policy answers, and integrations (WhatsApp, Google / Outlook
+calendar, room booking).
 
-## Purpose
-This project provides a friendly, human-like interface for employees to complete HR and office productivity tasks in one place.
+The codebase is a FastAPI service and a Vite + React frontend designed to
+ship as a dedicated deployment per customer.
 
-## Core Outcomes
-- Automate routine HR queries and workflows.
-- Improve employee engagement and response speed.
-- Provide proactive insight via sentiment and attrition analytics.
+## What's in the repo
 
-## Documentation
-- [MARK Product and System Design](docs/Mark-Intelligent-Workplace-Agent-Product-System-Design.md)
-- [MARK vs Infeedo B2B Comparison](docs/Mark-vs-Infeedo-B2B-Comparison.md)
-- [MARK Jira Execution Backlog](docs/Mark-Jira-Execution-Backlog.md)
-- [MARK Jira Execution Import CSV](docs/Mark-Jira-Execution-Import.csv)
-- [MARK Layer-2 API Contracts](docs/Mark-Layer2-API-Contracts.yaml)
-- [MARK Database Migration Plan](docs/Mark-Database-Migration-Plan.md)
-- [Technical Documentation](docs/AI-HR-Workplace-Assistant-Technical-Documentation.md)
-- [Database Schema Design](docs/Database-Schema-Design.md)
-- [Task and Workflow Playbook](docs/Task-Workflow-Playbook.md)
-- [Tasks, Milestones, and Delivery Roadmap](docs/Tasks-Milestones-Roadmap.md)
-- [Jira Epics and Stories Backlog](docs/Jira-Epics-Stories-Backlog.md)
-- [Jira Backlog CSV Import](docs/Jira-Backlog-Import.csv)
-- [Jira Import Guide](docs/Jira-Import-Guide.md)
-- [Sprint Execution Plan and Estimates](docs/Sprint-Execution-Plan-Estimates.md)
-- [OpenAPI Skeleton](docs/openapi.yaml)
-- [API Contracts](docs/API_CONTRACTS.md)
-- [Staging sign-off — sentiment & HR analytics](docs/STAGING_SIGNOFF_SENTIMENT.md)
-- [Architecture Diagrams (Mermaid)](docs/Architecture-Diagrams.md)
+| Path | Contents |
+|---|---|
+| `backend/` | FastAPI service, SQLAlchemy models, Alembic migrations, multi-agent orchestration, sentiment pipeline, RAG, schedulers, tests |
+| `backend/app/workers/` | Opt-in Celery tasks (sentiment, proactive scans, webhook delivery) |
+| `backend/docs/` | Operator docs — `SSO.md`, `WORKERS.md` |
+| `new-frontend/` | Vite + React + Tailwind + shadcn/ui app (employee, HR, manager, admin surfaces) |
+| `db/` | SQL schema and bootstrap scripts |
+| `scripts/` | Smoke probes and release helpers |
+| `.github/workflows/` | CI (pytest, tsc, vite build, smoke E2E against SQLite) |
 
-## Data Layer
-- [PostgreSQL Production Schema](db/schema.sql)
+## Capabilities
 
-## MVP Focus
-Phase 1 prioritizes:
-- Friendly HR partner experience (human-like, trusted, workflow-first)
-- RAG for HR policies and FAQs
-- HR ticket automation
-- Email drafting assistant
+### For employees
 
-## Suggested Stack
-- Backend: FastAPI (Python)
-- AI: GPT + RAG (LangChain or equivalent)
-- Data: PostgreSQL + Vector DB + Redis
-- Frontend: React web app + Slack/Teams bot integration
-- Deployment: Docker + Kubernetes (AWS or Azure)
+- Floating **chat widget** with streaming responses, attachments, quick
+  actions, CSAT, and a persistent unread badge.
+- **Leave** workflow with date validation, manager approval lifecycle, and
+  60-day cap.
+- **Complaint / ticket** flow with anonymous-by-flag support — anonymous
+  tickets scrub `user_id` from HR-facing responses (`Ticket.is_anonymous`).
+- **Policy Q&A** via RAG (sentence-aware chunking, BM25 + cosine hybrid
+  retrieval, source attribution, freshness warnings).
+- **WhatsApp link** — self-serve pairing via a short code so HR replies,
+  leave decisions, and reminders reach the user's phone.
+- **Calendar OAuth** — connect Google Calendar or Outlook for free/busy
+  lookup and event creation.
+- **Room booking** at `/rooms` with availability grid + cancel.
 
-## Local Development
-- Frontend: `new-frontend` (Vite + React + React Router)
-- Backend: `backend` (FastAPI)
+### For HR
+
+- **Dashboard 2.0** at `/dashboard`:
+  - KPI tiles with deltas vs prior period (`/analytics/kpis-with-deltas`)
+  - Stacked sentiment trend chart with 7d / 30d / 90d range selector
+  - Department × sentiment-bucket heatmap (`/analytics/departments-heatmap`)
+  - Top-10 at-risk employees with sort toggle
+  - Alerts panel grouped by severity from `hr_alerts`
+  - AI insight feed
+- **Ticket drawer 2.0** at `/tickets`:
+  - LLM-generated summary, cached in Redis, refresh-able
+  - Live SLA countdown with progress bar
+  - Sentiment trajectory sparkline since ticket open
+  - Action chips: Escalate / Schedule 1:1 / Loop in manager / Close
+  - Auto-loaded "possibly related" tickets
+- **Knowledge base** at `/knowledge-base` with stale-document badges (>365 days)
+- **Audit log** middleware records every state-changing call on sensitive
+  surfaces (tickets, leave, alerts, surveys, integrations, webhooks) into
+  `audit_logs` — actor, method, path, target, payload SHA256, status, IP.
+
+### Backend platform
+
+- **Multi-agent orchestration**: analysis, emotional, proactive,
+  productivity agents with confidence-scored overlays; moderation pass
+  drops weak overlays and masks PII inside specialist output.
+- **Sentiment pipeline**: hybrid LLM + lexicon, per-message logs,
+  employee score aggregation, sustained-risk alerts.
+- **Proactive engine**: APScheduler-driven (SLA escalation, silent users,
+  break / lunch / wellness nudges, repeated-complaint detection, leave
+  accrual).
+- **Field-level encryption helper** (`app/core/encryption.py`) — opt-in
+  Fernet `EncryptedText` column type for sensitive free-text fields.
+- **SSO** stub (`/api/v1/sso/*`) — interface in place, real
+  implementation guided by `backend/docs/SSO.md`.
+- **Schema-drift audit** at boot — warns when the live DB drifts from the
+  latest Alembic head instead of silently diverging.
+
+### Observability & ops
+
+- `/healthz` (liveness) and `/readyz` (DB / Redis / Azure OpenAI checks).
+- **Sentry** wiring on both backend (FastAPI integration) and frontend
+  (dynamic import — no failure when SDK is absent). Set `SENTRY_DSN` /
+  `VITE_SENTRY_DSN` to enable.
+- **Opt-in Celery workers** for sentiment, proactive scans, and webhook
+  delivery — driven by `CELERY_BROKER_URL`. Without a broker everything
+  runs in-process exactly as before. See `backend/docs/WORKERS.md`.
+
+## Tech stack
+
+| Layer | Tech |
+|---|---|
+| Backend | FastAPI 0.109, SQLAlchemy 2.0, Alembic, Pydantic 2 |
+| LLM | Azure OpenAI (chat completions + embeddings); MockAzureOpenAIClient for tests |
+| Storage | PostgreSQL (Supabase-compatible), SQLite for local dev |
+| Cache / broker | Redis (in-memory fallback when absent) |
+| Background | APScheduler in-process; optional Celery workers |
+| RAG | pypdf + python-docx ingestion, rank-bm25, cosine similarity, Redis-cached chunk embeddings |
+| Frontend | Vite 5, React 18, TypeScript, Tailwind, shadcn/ui, Recharts, Framer Motion |
+
+## Local setup
+
+1. Copy `.env.example` to `.env` and fill in the required service credentials.
+2. Start the stack with Docker Compose or run the backend and frontend separately.
+
+### Docker Compose
 
 ```bash
-# Backend
-cd backend && python -m uvicorn app.main:app --reload
-
-# Frontend
-cd new-frontend && npm install && npm run dev
-```
-
-### Seeded accounts (FastAPI)
-Run from `backend`: `python -m scripts.seed_dummy_users`
-
-| Role      | Email           | Password      |
-|-----------|-----------------|---------------|
-| HR        | `hr1@mark.ai`   | `password123` |
-| Employee  | `emp1@mark.ai`  | `password123` |
-
-### End-to-end smoke (optional)
-With API running (`uvicorn`) and DB seeded:
-
-```bash
-cd backend
-python -m scripts.smoke_e2e
-```
-
-Override base URL if needed: `SMOKE_API_URL=http://localhost:8000 python -m scripts.smoke_e2e`
-
-Use **real** `AZURE_OPENAI_*` values in `.env` for LLM-backed chat and hybrid sentiment (not mock keys).
-
-Run the app with Docker Compose:
-
-```bash
+# Default: API + frontend + redis (no workers).
 docker compose up --build
+
+# Opt in to Celery workers — requires CELERY_BROKER_URL in .env.
+docker compose --profile workers up --build
 ```
 
 This starts:
+
 - Backend API on `http://localhost:8000`
-- Primary frontend (`new-frontend`) on `http://localhost:8080`
+- Frontend on `http://localhost:8080`
+- Redis on port `6379`
+- Optionally a Celery worker (under the `workers` profile)
+
+### Backend
+
+```bash
+cd backend
+pip install -r requirements.txt
+python -m uvicorn app.main:app --reload
+```
+
+### Frontend
+
+```bash
+cd new-frontend
+npm install
+npm run dev
+```
+
+## Useful commands
+
+```bash
+# Seed demo users (emp1@mark.ai / hr1@mark.ai, password: password123)
+cd backend
+python -m scripts.seed_dummy_users
+
+# Run the end-to-end smoke probe (login, chat, ticket, leave, sentiment, health)
+python -m scripts.smoke_e2e
+
+# Run the backend test suite
+pytest
+
+# Start a Celery worker (requires CELERY_BROKER_URL)
+celery -A app.workers.celery_app.celery worker -l info -Q default
+```
+
+```bash
+# Frontend type-check + production build
+cd new-frontend
+npx tsc --noEmit
+npm run build
+```
+
+## Environment knobs
+
+Most of MARK is feature-flagged. Some non-obvious ones:
+
+| Env var | Effect |
+|---|---|
+| `CELERY_BROKER_URL` | When set, sentiment / proactive / webhook tasks dispatch to Celery workers; otherwise they run inline |
+| `MARK_ENCRYPTION_KEY` | URL-safe base64 Fernet key for `EncryptedText` columns; module is no-op when unset |
+| `SENTRY_DSN` / `VITE_SENTRY_DSN` | Enables Sentry capture on backend / frontend; both fail-open when absent |
+| `ENABLE_WHATSAPP_CHANNEL`, `TWILIO_*`, `WHATSAPP_VERIFY_TOKEN` | Enable WhatsApp inbound webhook + outbound notifications |
+| `ENABLE_PRODUCTIVITY_AGENT`, `ENABLE_LIFE_ASSISTANT`, `ENABLE_MULTI_AGENT_ORCHESTRATION` | Toggle multi-agent specialists |
+| `ENABLE_ALERT_BACKGROUND`, `ALERT_SCAN_INTERVAL_SECONDS` | Proactive wellbeing scan loop |
+| `AZURE_OPENAI_*` | Real LLM-backed chat, RAG, sentiment, ticket summaries; mock client kicks in when key is `mock-key` |
+| `WHATSAPP_USER_MAP` | Legacy static email→phone demo map; dynamic per-user `whatsapp_links` table is preferred |
+
+## Health & probes
+
+- `GET /healthz` — liveness, no dependencies
+- `GET /readyz` — DB required, Redis + Azure OpenAI best-effort; returns 503 on DB failure
+- `GET /health` — legacy alias, kept for back-compat

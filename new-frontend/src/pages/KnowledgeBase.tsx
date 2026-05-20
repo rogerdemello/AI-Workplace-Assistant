@@ -69,7 +69,10 @@ export default function KnowledgeBase() {
             {documents.map((doc) => (
               <li key={doc.id} className="grid grid-cols-[1fr_120px_120px_100px] gap-3 items-center px-5 py-3">
                 <div className="min-w-0">
-                  <div className="text-sm font-medium truncate">{doc.title}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-medium truncate">{doc.title}</div>
+                    <FreshnessBadge updatedAt={doc.updated_at || doc.created_at} />
+                  </div>
                   <div className="text-xs text-muted-foreground">{new Date(doc.created_at).toLocaleString()}</div>
                 </div>
                 <div className="text-sm">{doc.chunks_count}</div>
@@ -117,5 +120,27 @@ export default function KnowledgeBase() {
         </div>
       </div>
     </AppLayout>
+  );
+}
+
+// Matches POLICY_OUTDATED_DAYS in rag_orchestrator.py — the same threshold
+// the backend uses to warn the chat user, surfaced visually here so HR sees
+// stale documents at a glance instead of waiting for someone to ask a
+// question that touches them.
+const FRESHNESS_WARN_DAYS = 365;
+
+function FreshnessBadge({ updatedAt }: { updatedAt: string | null }) {
+  if (!updatedAt) return null;
+  const ts = Date.parse(updatedAt);
+  if (Number.isNaN(ts)) return null;
+  const ageDays = (Date.now() - ts) / 86_400_000;
+  if (ageDays < FRESHNESS_WARN_DAYS) return null;
+  return (
+    <span
+      className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-md bg-warning-soft text-warning font-medium"
+      title={`Last updated ${Math.floor(ageDays)} days ago — chat answers will warn users that this policy may be outdated.`}
+    >
+      Stale &gt; {Math.round(ageDays / 30)}mo
+    </span>
   );
 }
