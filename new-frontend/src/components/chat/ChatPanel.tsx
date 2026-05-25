@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Sparkles, X, Maximize2, Minimize2, ChevronDown, Paperclip, MessageSquarePlus } from "lucide-react";
+import { Send, Sparkles, X, Maximize2, Minimize2, ChevronDown, Paperclip, MessageSquarePlus, Mail } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { useChat } from "@/contexts/ChatContext";
+import { useChat, MOOD_CHOICES } from "@/contexts/ChatContext";
 import { formatFlowStepLabel } from "@/lib/flow-metadata-ui";
 import { MessageBubble } from "./MessageBubble";
 import { cn } from "@/lib/utils";
@@ -27,9 +28,14 @@ export function ChatPanel() {
     pendingCsat,
     submitCsatRating,
     dismissCsat,
+    moodCheckinActive,
+    logMoodCheckin,
+    dismissMoodCheckin,
     startNewChat,
     chatReady,
+    conversationId,
   } = useChat();
+  const navigate = useNavigate();
   const flowLabel = formatFlowStepLabel(flowMetadata);
   const [input, setInput] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -157,8 +163,48 @@ export function ChatPanel() {
           )}
         </div>
 
+        {moodCheckinActive ? (
+          <div className="border-t border-border bg-teal-50/60 px-3 py-3">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-teal-800">Quick mood check-in</p>
+              <button
+                type="button"
+                onClick={dismissMoodCheckin}
+                className="text-[11px] text-slate-500 hover:text-slate-700"
+              >
+                Skip
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {MOOD_CHOICES.map((choice) => (
+                <button
+                  key={choice.emoji}
+                  type="button"
+                  onClick={() => void logMoodCheckin(choice)}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-white border border-border px-3 py-1.5 text-xs hover:border-accent transition-colors"
+                >
+                  <span className="text-base leading-none">{choice.emoji}</span>
+                  {choice.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="border-t border-border bg-card px-3 py-2">
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Quick actions</p>
+          <div className="mb-1 flex items-center justify-between">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Quick actions</p>
+            {conversationId ? (
+              <button
+                type="button"
+                onClick={() => navigate(`/email-assistant?conversation_id=${conversationId}`)}
+                className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
+                title="Open the email assistant pre-loaded with this conversation as context"
+              >
+                <Mail className="size-3" /> Draft email about this
+              </button>
+            ) : null}
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {quickActions.map((option) => (
               <button

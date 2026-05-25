@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import hashlib
+import hmac
+import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -12,6 +17,7 @@ from ...database import get_db
 from ...models.user import User, UserRole, UserStatus
 from ...schemas.chat import MessageSender
 from ...services.chat import ChatService
+from ...services.realtime_bus import realtime_bus
 from ...services.smart_chat import get_smart_chat_service
 from xml.sax.saxutils import escape as xml_escape
 
@@ -23,6 +29,37 @@ from ...services.v2.whatsapp_link import (
     find_user_by_phone,
 )
 from ...services.v2.whatsapp_session import get_or_resume_whatsapp_conversation
+
+logger = logging.getLogger(__name__)
+
+
+def _publish_realtime(event_type: str, payload: dict) -> None:
+    try:
+        asyncio.run(realtime_bus.publish(event_type, payload))
+    except Exception:
+        pass
+
+
+def _validate_twilio_signature(request: Request, form_params: dict[str, str]) -> bool:
+    """Validate Twilio's X-Twilio-Signature on an inbound webhook.
+
+    Algorithm (per Twilio docs): HMAC-SHA1 over (full request URL +
+    concat of sorted key+value pairs from the POST body), with the auth
+    token as the key, base64-encoded.
+    """
+    auth_token = (settings.TWILIO_AUTH_TOKEN or "").encode("utf-8")
+    if not auth_token:
+        # Signature validation is on but we have no token to verify against —
+        # safer to reject than to silently bypass.
+        return False
+    provided = request.headers.get("X-Twilio-Signature", "")
+    if not provided:
+        return False
+    url = str(request.url)
+    payload = url + "".join(f"{k}{form_params[k]}" for k in sorted(form_params))
+    digest = hmac.new(auth_token, payload.encode("utf-8"), hashlib.sha1).digest()
+    expected = base64.b64encode(digest).decode("utf-8")
+    return hmac.compare_digest(expected, provided)
 
 router = APIRouter(prefix="/workplace", tags=["workplace-v2"])
 
@@ -96,7 +133,8 @@ def _resolve_whatsapp_user(db: Session, from_number: str) -> User:
 
 
 @router.post("/whatsapp/webhook")
-def receive_whatsapp_message(
+async def receive_whatsapp_message(
+    request: Request,
     Body: str = Form(default=""),
     From: str = Form(default=""),
     To: str = Form(default=""),
@@ -104,6 +142,12 @@ def receive_whatsapp_message(
 ):
     if not settings.ENABLE_WHATSAPP_CHANNEL:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WhatsApp channel disabled")
+
+    if settings.WHATSAPP_VALIDATE_SIGNATURE:
+        form_dict = {k: (v if isinstance(v, str) else "") for k, v in (await request.form()).items()}
+        if not _validate_twilio_signature(request, form_dict):
+            logger.warning("Rejected inbound whatsapp webhook: bad signature from %s", From or "unknown")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid signature")
 
     incoming_text = (Body or "").strip()
     if not incoming_text:
@@ -164,6 +208,19 @@ def receive_whatsapp_message(
         message_text=reply,
         sender=MessageSender.bot,
     )
+
+    try:
+        await realtime_bus.publish(
+            "whatsapp_message_received",
+            {
+                "user_id": str(user.id),
+                "conversation_id": str(conversation.id),
+                "from_phone_masked": (From or "")[:-4] + "****" if From else "",
+                "preview": incoming_text[:140],
+            },
+        )
+    except Exception:
+        pass
 
     twiml = f"<Response><Message>{xml_escape(reply)}</Message></Response>"
     _ = To  # reserved for provider-specific routing in future slices

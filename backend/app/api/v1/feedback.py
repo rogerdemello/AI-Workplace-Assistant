@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ...auth import get_current_user
 from ...database import get_db
+from ...models.anonymous_feedback import AnonymousFeedback
 from ...models.chat_feedback import ChatFeedback
 from ...models.user import User
 
@@ -22,6 +23,12 @@ class FeedbackCreate(BaseModel):
 class FeedbackResponse(BaseModel):
     token: str
     status: str
+
+
+class FeedbackStatusResponse(BaseModel):
+    status: str
+    category: str
+    created_at: datetime
 
 
 class ChatCSATCreate(BaseModel):
@@ -41,10 +48,14 @@ class ChatCSATResponse(BaseModel):
 
 
 @router.post("/anonymous", response_model=FeedbackResponse)
-def submit_anonymous_feedback(feedback: FeedbackCreate):
+def submit_anonymous_feedback(feedback: FeedbackCreate, db: Session = Depends(get_db)):
     """
     Submit anonymous feedback without authentication.
     Returns a token that can be used to track the feedback status (shown only once).
+
+    Anonymity is structural: we persist only a one-way hash of the token and
+    never any identity. The raw token is returned to the submitter once and is
+    not recoverable afterwards.
     """
     # Validate category
     valid_categories = ['culture', 'management', 'benefits', 'workload', 'other']
@@ -53,35 +64,53 @@ def submit_anonymous_feedback(feedback: FeedbackCreate):
             status_code=400,
             detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}"
         )
-    
+
     # Validate message
     if not feedback.message or not feedback.message.strip():
         raise HTTPException(
             status_code=400,
             detail="Message cannot be empty"
         )
-    
+
     if len(feedback.message) > 5000:
         raise HTTPException(
             status_code=400,
             detail="Message cannot exceed 5000 characters"
         )
-    
-    # Generate anonymous token
+
+    # Generate anonymous token; store only its hash so status can be checked
+    # later without ever linking back to a person.
     token = str(uuid4())
-    # Hash token for storage (only show once)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    
-    # In production, you would save to database here:
-    # feedback_record = Feedback(
-    #     token_hash=token_hash,
-    #     category=feedback.category,
-    #     message=feedback.message
-    # )
-    # db.add(feedback_record)
-    # db.commit()
-    
+
+    record = AnonymousFeedback(
+        token_hash=token_hash,
+        category=feedback.category,
+        message=feedback.message.strip(),
+        status="submitted",
+    )
+    db.add(record)
+    db.commit()
+
     return FeedbackResponse(token=token, status="submitted")
+
+
+@router.get("/anonymous/status", response_model=FeedbackStatusResponse)
+def get_anonymous_feedback_status(token: str, db: Session = Depends(get_db)):
+    """Check the status of an anonymous submission using its one-time token."""
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    record = (
+        db.query(AnonymousFeedback)
+        .filter(AnonymousFeedback.token_hash == token_hash)
+        .first()
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="No feedback found for that token.")
+    return FeedbackStatusResponse(
+        status=record.status,
+        category=record.category,
+        created_at=record.created_at,
+    )
 
 
 @router.get("/categories")

@@ -10,18 +10,25 @@ const TONE_MAP: Record<string, string> = {
   Brief: "neutral",
 };
 
-export async function draftEmail(input: { context: string; toneLabel: string }): Promise<{ subject: string; body: string } | null> {
+export async function draftEmail(input: {
+  context: string;
+  toneLabel: string;
+  conversationId?: string;
+}): Promise<{ subject: string; body: string; groundedInConversation: boolean } | null> {
   const apiTone = TONE_MAP[input.toneLabel] || "friendly";
   const type = EMAIL_TYPES.find((t) => input.context.toLowerCase().includes(t.replace("_", " "))) ?? "general";
-  const res = await postJson<Record<string, unknown>>("/api/v1/email/draft", {
+  const body: Record<string, unknown> = {
     type,
     tone: apiTone,
     context: { message: input.context },
-  });
+  };
+  if (input.conversationId) body.conversation_id = input.conversationId;
+  const res = await postJson<Record<string, unknown>>("/api/v1/email/draft", body);
   if (!res) return null;
   return {
     subject: String(res.subject ?? "Draft"),
     body: String(res.body ?? ""),
+    groundedInConversation: Boolean(res.grounded_in_conversation),
   };
 }
 

@@ -24,6 +24,10 @@ os.environ["REDIS_URL"] = "redis://localhost:6379"
 os.environ["TESTING"] = "1"
 os.environ["FAST_CHAT_MODE"] = "true"
 os.environ["CHAT_SKIP_INTELLIGENCE_SNAPSHOT"] = "false"
+# Inbound WhatsApp webhook tests don't sign their TestClient requests; turn off
+# Twilio signature validation in the suite. Production stays guarded — this env
+# only applies to pytest.
+os.environ["WHATSAPP_VALIDATE_SIGNATURE"] = "false"
 
 
 class GUID(TypeDecorator):

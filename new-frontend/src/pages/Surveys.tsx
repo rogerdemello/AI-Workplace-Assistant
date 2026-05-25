@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { createSurvey, getSurveys } from "@/lib/services";
 import type { Survey } from "@/lib/domain-types";
@@ -15,12 +16,28 @@ export default function Surveys() {
   const { session } = useAuth();
   const [creating, setCreating] = useState(false);
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const loadSurveys = () => {
     void getSurveys().then(setSurveys);
   };
   useEffect(() => {
     loadSurveys();
   }, []);
+
+  // Deep link: /surveys?survey=<id> opens the fillable survey directly, so a
+  // lifecycle nudge's CTA lands the user straight on the form.
+  useEffect(() => {
+    const id = searchParams.get("survey");
+    if (id) setRespondingTo(id);
+  }, [searchParams]);
+
+  const closeResponder = () => {
+    setRespondingTo(null);
+    if (searchParams.has("survey")) {
+      searchParams.delete("survey");
+      setSearchParams(searchParams, { replace: true });
+    }
+  };
 
   const createQuickSurvey = async () => {
     setCreating(true);
@@ -127,7 +144,7 @@ export default function Surveys() {
 
       <SurveyResponseDialog
         surveyId={respondingTo}
-        onClose={() => setRespondingTo(null)}
+        onClose={closeResponder}
         onSubmitted={loadSurveys}
       />
     </AppLayout>

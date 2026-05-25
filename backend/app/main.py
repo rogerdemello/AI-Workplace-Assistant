@@ -26,6 +26,7 @@ from .models import hr_notification as _hr_notification_model  # noqa: F401 — 
 from .models import automation_rule as _automation_rule_model  # noqa: F401 — register AutomationRule with Base.metadata
 from .models import audit_log as _audit_log_model  # noqa: F401 — register AuditLog with Base.metadata
 from .models import whatsapp_link as _whatsapp_link_model  # noqa: F401 — register WhatsappLink with Base.metadata
+from .models import anonymous_feedback as _anonymous_feedback_model  # noqa: F401 — register AnonymousFeedback with Base.metadata
 from .api.v1.auth import router as auth_router
 from .api.v1.demo_auth import router as demo_auth_router
 from .api.v1.chat import router as chat_router
