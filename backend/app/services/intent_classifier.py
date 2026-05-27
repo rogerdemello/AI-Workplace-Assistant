@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime
 
 from ..ai_client import get_ai_client, AzureOpenAIClient, MockAzureOpenAIClient
+from ..config import settings
 from ..core.time import utcnow_naive
 from .hr_personality import FRIENDLY_SYSTEM_PROMPT, EMOTIONALLY_AWARE_PROMPT
 
@@ -243,15 +244,35 @@ class IntentClassifier:
                 if cached:
                     classification_result = cached
                     path = "cache"
+                elif settings.FAST_CHAT_MODE:
+                    # Latency mode: skip the LLM classify fallback (a full extra
+                    # gpt-4o round-trip per turn). Explicit intents are caught by
+                    # the regex routes above; everything else is general chat —
+                    # the general handler still replies, and mid-flow this reads
+                    # as "continue the current flow".
+                    classification_result = {
+                        "intent": "general_query",
+                        "confidence": 0.4,
+                        "reasoning": "fast-mode default (LLM classify skipped)",
+                    }
+                    path = "fast-default"
                 else:
                     # 3. LLM fallback
                     classification_result = self._llm_classify(message)
                     path = "llm"
                     set_cached(cache_key, classification_result, ttl=60)
             except Exception:
-                # Cache unavailable — fall through to LLM
-                classification_result = self._llm_classify(message)
-                path = "llm"
+                # Cache unavailable — fall through to LLM (unless fast mode)
+                if settings.FAST_CHAT_MODE:
+                    classification_result = {
+                        "intent": "general_query",
+                        "confidence": 0.4,
+                        "reasoning": "fast-mode default (LLM classify skipped)",
+                    }
+                    path = "fast-default"
+                else:
+                    classification_result = self._llm_classify(message)
+                    path = "llm"
 
         duration_ms = round((time.perf_counter() - start_ts) * 1000, 2)
         logger.info(
