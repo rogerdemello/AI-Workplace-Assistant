@@ -1063,6 +1063,7 @@ class SmartChatService:
             ],
             temperature=0.4,
             max_tokens=140,
+            deployment=settings.AZURE_OPENAI_FAST_DEPLOYMENT or None,
         )
 
     def stream_non_flow_intent_tokens(self, intent: str, message: str, sentiment: str, mode: str):
@@ -1084,6 +1085,7 @@ class SmartChatService:
                 ],
                 temperature=0.3,
                 max_tokens=120,
+                deployment=settings.AZURE_OPENAI_FAST_DEPLOYMENT or None,
             )
 
         if intent_key == "email_draft":
@@ -1100,6 +1102,7 @@ class SmartChatService:
                 ],
                 temperature=0.35,
                 max_tokens=140,
+                deployment=settings.AZURE_OPENAI_FAST_DEPLOYMENT or None,
             )
 
         if intent_key in {"policy_query", "benefits_question"}:

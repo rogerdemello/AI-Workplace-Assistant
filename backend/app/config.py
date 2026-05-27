@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     AZURE_OPENAI_API_KEY: str = "mock-key"
     AZURE_OPENAI_ENDPOINT: str = "https://mock.openai.azure.com"
     AZURE_OPENAI_DEPLOYMENT: str = "gpt-4"
+    # Optional faster/cheaper deployment (e.g. gpt-4o-mini) used for streaming
+    # general-chat replies to lower time-to-first-token. Falls back to
+    # AZURE_OPENAI_DEPLOYMENT when empty.
+    AZURE_OPENAI_FAST_DEPLOYMENT: str = ""
     AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
     SECRET_KEY: str = "your-secret-key-here"
     ALGORITHM: str = "HS256"

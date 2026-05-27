@@ -93,11 +93,12 @@ class AzureOpenAIClient:
         messages: List[ChatCompletionMessageParam],
         temperature: float = 0.7,
         max_tokens: int = 2000,
+        deployment: Optional[str] = None,
         **kwargs
     ) -> Iterator[str]:
         try:
             stream = self.client.chat.completions.create(
-                model=self.deployment,
+                model=deployment or self.deployment,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
