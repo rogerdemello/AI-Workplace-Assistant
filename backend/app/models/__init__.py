@@ -32,6 +32,21 @@ from .sentiment_log import SentimentLog
 from .employee_score import EmployeeScore
 from .message_signal import MessageSignal
 from .anonymous_feedback import AnonymousFeedback
+# Imported so every table is registered on Base.metadata when alembic loads
+# `app.models`; without these, autogenerate flagged live tables (documents,
+# audit_logs, whatsapp_links, meeting_events, analytics_*) for removal.
+from .analytics import (
+    MentalHealthScore,
+    BurnoutPrediction,
+    SentimentHistory,
+    AnalyticsSnapshot,
+    Insight,
+    ResponseSuggestion,
+)
+from .audit_log import AuditLog
+from .document import Document, DocumentChunk
+from .meeting_event import MeetingEvent
+from .whatsapp_link import WhatsappLink
 
 __all__ = [
     "User", "UserRole", "UserStatus", "Department",
