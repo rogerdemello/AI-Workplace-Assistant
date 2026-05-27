@@ -61,7 +61,12 @@ class ConversationOrchestrator:
                 "sentiment": str(intel_ctx.get("label", "neutral")),
                 "score": max(-1.0, min(1.0, (s0 - 50) / 50.0)),
             }
-        elif _fast and self.service.current_flow in {"leave_request", "ticket"}:
+        elif _fast:
+            # FAST_CHAT_MODE: lexicon-only on the reply path for every message —
+            # the hybrid analyze() makes an LLM call (up to SENTIMENT_LLM_TIMEOUT
+            # seconds) and is redundant here, since the HR-persisted sentiment is
+            # already lexicon (CHAT_SYNC_LEXICON_SENTIMENT) and this value only
+            # drives conversation-mode detection.
             sentiment_result = self.service.sentiment_service.analyze_lexicon_only(message)
         else:
             sentiment_result = self.service.sentiment_service.analyze(message)

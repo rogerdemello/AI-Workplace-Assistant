@@ -196,18 +196,14 @@ def unified_chat_message(
         logger.warning("Failed to persist messages", exc_info=True)
         user_message = None
 
-    # ── Sentiment pipeline → sentiment_logs + employee_scores (HR dashboard) ──
-    if _should_persist_sentiment_pipeline(intel):
-        _run_sentiment_pipeline_for_user_message(
-            db,
-            employee_id=current_user.id,
-            user_message=user_message,
-            message_text=request.message,
-            sentiment_label=str(sentiment_label),
-            sentiment_score=float(sentiment_score or 0.0),
-            intelligence_snapshot=intel,
-            conversation_id=conversation_id,
-        )
+    # Sentiment pipeline (sentiment_logs + employee_scores for HR dashboards) is
+    # HR-facing only; it's deferred off the chat reply path below rather than run
+    # synchronously. user_message is already committed, so its id is stable.
+    pipeline_message_id = (
+        user_message.id
+        if (user_message is not None and _should_persist_sentiment_pipeline(intel))
+        else None
+    )
 
     try:
         event_bus.publish(
@@ -244,8 +240,20 @@ def unified_chat_message(
             sentiment_score=sentiment_score,
             intent=intent_guess,
             sentiment_label=str(sentiment_label),
+            pipeline_message_id=pipeline_message_id,
         )
     else:
+        if pipeline_message_id is not None:
+            _run_sentiment_pipeline_for_user_message(
+                db,
+                employee_id=current_user.id,
+                user_message=user_message,
+                message_text=request.message,
+                sentiment_label=str(sentiment_label),
+                sentiment_score=float(sentiment_score or 0.0),
+                intelligence_snapshot=intel,
+                conversation_id=conversation_id,
+            )
         if get_feature_flags().enable_proactive:
             try:
                 get_mark_proactive_service(db=db).capture_chat_signal(
@@ -390,12 +398,32 @@ def _defer_chat_nonblocking_side_effects(
     sentiment_score: float,
     intent: str,
     sentiment_label: str,
+    pipeline_message_id: Optional[UUID] = None,
 ) -> None:
     """Runs after HTTP response — own DB session; must not touch request-scoped `db`."""
     from ...database import SessionLocal
 
     db = SessionLocal()
     try:
+        # Sentiment pipeline (sentiment_logs + employee_scores for HR dashboards)
+        # writes to remote Postgres and recomputes aggregates — kept off the chat
+        # reply path. The user_message was already committed by the request.
+        if pipeline_message_id is not None:
+            try:
+                SentimentPipelineService(db).process_message(
+                    employee_id=employee_id,
+                    message_id=pipeline_message_id,
+                    message_text=message_text,
+                    sentiment_label=sentiment_label,
+                    sentiment_score=float(sentiment_score or 0.0),
+                    conversation_id=conversation_id,
+                )
+            except Exception:
+                logger.warning("Deferred sentiment pipeline skipped", exc_info=True)
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
         if get_feature_flags().enable_proactive:
             try:
                 get_mark_proactive_service(db=db).capture_chat_signal(
