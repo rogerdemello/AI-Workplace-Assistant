@@ -79,22 +79,31 @@ def _heuristic_leave_entities(
             out["end_date"] = d0
 
     low = text.lower()
+    matched_type: Optional[str] = None
     if re.search(r"\b(sick|ill|medical)\b", low):
-        out["leave_type"] = "sick"
+        matched_type = "sick"
     elif re.search(r"\b(wfh|work from home|working from home|remote)\b", low):
-        out["leave_type"] = "work from home"
+        matched_type = "work from home"
     elif re.search(r"\b(unpaid|personal|bereavement|parental)\b", low):
-        out["leave_type"] = "personal"
+        matched_type = "personal"
     elif re.search(r"\b(paid|pto|annual|vacation|holiday|time off)\b", low):
-        out["leave_type"] = "vacation"
+        matched_type = "vacation"
+
+    # The slot the flow is actually waiting on, based on already-collected data.
+    pending_slot = first_missing_leave_slot(cd)
+
+    # Only adopt a type keyword as leave_type while the flow is still collecting
+    # the type. At the reason step a word like "vacation" in "going on a vacation"
+    # belongs to the reason, not a type selection — otherwise the reason is never
+    # captured and the flow loops re-asking for it.
+    if matched_type and pending_slot != "reason":
+        out["leave_type"] = matched_type
 
     looks_like_date_only = len(dates) == 1 and bool(re.fullmatch(r"\s*" + re.escape(dates[0]) + r"\s*", text))
-    next_slot = first_missing_leave_slot({**cd, **{k: v for k, v in out.items() if v}})
     if (
-        next_slot == "reason"
+        pending_slot == "reason"
         and out["start_date"] is None
         and out["end_date"] is None
-        and out["leave_type"] is None
         and len(text) > 12
         and not looks_like_date_only
         and not re.match(r"^(yes|no|yeah|yep|ok|okay|sure)\b", low)
