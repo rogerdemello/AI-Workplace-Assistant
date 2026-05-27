@@ -56,7 +56,19 @@ export function MessageBubble({ message }: Props) {
             ? "bg-ink text-primary-foreground rounded-br-md"
             : "bg-secondary text-foreground rounded-bl-md"
         )}>
-          <span className="whitespace-pre-wrap">{renderWithLinks(message.text)}</span>
+          {!isUser && message.text.length === 0 ? (
+            <span className="flex items-center gap-1 py-1" aria-label="MARK is typing">
+              {[0, 150, 300].map((delay) => (
+                <span
+                  key={delay}
+                  className="size-1.5 rounded-full bg-foreground/40 animate-bounce"
+                  style={{ animationDelay: `${delay}ms` }}
+                />
+              ))}
+            </span>
+          ) : (
+            <span className="whitespace-pre-wrap">{renderWithLinks(message.text)}</span>
+          )}
         </div>
 
         {/* Keep message bubble minimal; structured controls render in ChatPanel. */}
