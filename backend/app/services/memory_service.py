@@ -145,18 +145,27 @@ class MemoryService:
             for m in memories
         ]
     
-    def extract_memory_from_conversation(self, messages: List[Dict]) -> Dict:
-        """Extract summary and tags from conversation messages using LLM."""
+    def extract_memory_from_conversation(self, messages: List[Dict]) -> Optional[Dict]:
+        """Extract summary and tags from conversation messages using LLM.
+
+        Returns ``None`` when no AI client is available or extraction fails.
+        Callers must handle the None case explicitly — previously this returned
+        ``{"summary": "", "tags": []}``, which silently produced empty-but-valid
+        memory rows and misled downstream filters.
+        """
+        import logging
+
+        log = logging.getLogger(__name__)
         client = self._get_ai_client()
-        
+
         if not client:
-            return {"summary": "", "tags": []}
-        
+            return None
+
         conversation_text = "\n".join([
             f"{msg.get('role', 'user')}: {msg.get('content', '')}"
             for msg in messages
         ])
-        
+
         extraction_prompt = f"""Analyze this conversation and extract key information:
 
 {conversation_text}
@@ -176,15 +185,17 @@ Return ONLY valid JSON with 'summary' and 'tags' keys."""
                 temperature=0.3,
                 max_tokens=500
             )
-            
+
             content = response.get("choices", [{}])[0].get("message", {}).get("content", "{}")
             result = json.loads(content)
-            return {
-                "summary": result.get("summary", ""),
-                "tags": result.get("tags", [])
-            }
-        except Exception:
-            return {"summary": "", "tags": []}
+            summary = (result.get("summary") or "").strip()
+            tags = result.get("tags") or []
+            if not summary and not tags:
+                return None
+            return {"summary": summary, "tags": tags}
+        except Exception as exc:
+            log.warning("Memory extraction failed: %s", exc)
+            return None
     
     def update_user_profile(
         self, 

@@ -26,6 +26,7 @@ class SurveyCreate(BaseModel):
     description: Optional[str] = None
     questions: List[Dict[str, Any]]
     allow_anonymous: bool = False
+    survey_type: Optional[str] = None
 
 
 class SurveyUpdate(BaseModel):
@@ -43,9 +44,10 @@ class SurveyResponseModel(BaseModel):
     questions: List[Dict[str, Any]]
     is_active: bool
     allow_anonymous: bool
+    survey_type: Optional[str] = None
     created_by: Optional[UUID]
     created_at: Any
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -55,8 +57,9 @@ class SurveyListResponse(BaseModel):
     description: Optional[str]
     is_active: bool
     allow_anonymous: bool
+    survey_type: Optional[str] = None
     created_at: Any
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -88,6 +91,7 @@ def create_survey(
         description=survey.description,
         questions=survey.questions,
         allow_anonymous=survey.allow_anonymous,
+        survey_type=survey.survey_type,
         is_active=True,
         created_by=current_user.id
     )

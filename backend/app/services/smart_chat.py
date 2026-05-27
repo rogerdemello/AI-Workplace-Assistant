@@ -87,12 +87,46 @@ class SmartChatService:
         "leave days left",
     )
     
-    # EAP resources for employee wellness support
-    EAP_RESOURCES = {
-        "hotline": "1-800-XXX-XXXX",
-        "website": "https://yourcompany.eap.com",
+    # EAP resources for employee wellness support. Sourced from settings.EAP_RESOURCES_JSON
+    # when set so deployers don't ship the bot quoting fake hotline numbers; falls back
+    # to a public-helpline default below.
+    EAP_DEFAULTS = {
+        "hotline": "iCall (India): +91-9152987821",
+        "website": "https://icallhelpline.org/",
         "confidential_note": "All EAP consultations are confidential. Your manager will not be notified.",
+        "resources": [
+            {
+                "label": "iCall psychosocial helpline",
+                "url": "https://icallhelpline.org/",
+                "description": "Free, confidential counselling by trained mental-health professionals.",
+            },
+            {
+                "label": "Talk to HR directly",
+                "url": "mailto:hr@yourcompany.com",
+                "description": "If you'd rather loop in HR, we'll keep it discreet.",
+            },
+        ],
     }
+
+    @classmethod
+    def _eap_config(cls) -> Dict:
+        raw = (settings.EAP_RESOURCES_JSON or "").strip()
+        if not raw:
+            return cls.EAP_DEFAULTS
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("EAP_RESOURCES_JSON is not valid JSON; falling back to defaults")
+            return cls.EAP_DEFAULTS
+        if isinstance(parsed, list):
+            return {**cls.EAP_DEFAULTS, "resources": parsed}
+        if isinstance(parsed, dict):
+            return {**cls.EAP_DEFAULTS, **parsed}
+        return cls.EAP_DEFAULTS
+
+    @property
+    def EAP_RESOURCES(self) -> Dict:  # noqa: N802 — preserves existing call sites
+        return self._eap_config()
     
     # Employee wellness tips for long sessions
     WELLNESS_TIPS = [

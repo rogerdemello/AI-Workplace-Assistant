@@ -867,13 +867,18 @@ def start_conversation(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    conversation = ChatService(db).create_conversation(current_user.id)
-
+    # Build the greeting BEFORE creating today's conversation row so the
+    # first-time / first-chat-of-day detection isn't fooled by the new row.
+    suggested_mood_checkin = False
     try:
-        greeting = build_proactive_chat_opening(db, current_user)
+        opening = build_proactive_chat_opening(db, current_user)
+        greeting = opening.text
+        suggested_mood_checkin = opening.suggested_mood_checkin
     except Exception as e:
         logger.warning("Failed to build proactive greeting: %s", e)
         greeting = "Hey — I'm Mark. What's on your mind today?"
+
+    conversation = ChatService(db).create_conversation(current_user.id)
 
     ChatService(db).add_message(
         conversation_id=conversation.id,
@@ -884,6 +889,7 @@ def start_conversation(
     return ConversationStartResponse(
         conversation_id=conversation.id,
         greeting=greeting,
+        suggested_mood_checkin=suggested_mood_checkin,
     )
 
 

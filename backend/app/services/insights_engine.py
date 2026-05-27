@@ -216,14 +216,17 @@ class InsightsEngine:
         if not self.db:
             return insights
 
+        # employee_scores.risk_score is 0–100; risk_threshold is 0–1.
+        # Caller's contract is "fraction of risk" — convert at the boundary.
+        score_threshold = int(round(max(0.0, min(1.0, risk_threshold)) * 100))
         risk_sql = text("""
-            SELECT risk_score FROM attrition_risk
+            SELECT risk_score FROM employee_scores
             WHERE risk_score >= :threshold
             ORDER BY risk_score DESC
             LIMIT 10
         """)
 
-        at_risk = self.db.execute(risk_sql, {"threshold": risk_threshold}).fetchall()
+        at_risk = self.db.execute(risk_sql, {"threshold": score_threshold}).fetchall()
 
         if at_risk:
             insights.append({

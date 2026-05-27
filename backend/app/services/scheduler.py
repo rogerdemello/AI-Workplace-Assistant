@@ -924,6 +924,200 @@ def check_repeated_complaints() -> dict:
         db.close()
 
 
+ONBOARDING_MILESTONES = {
+    1: "How's your first day going? 😊 If anything's unclear, I'm right here — and a quick line of feedback helps us make onboarding better.",
+    7: "One week in! 🎉 How are you settling in? Mind sharing a little feedback on your first week?",
+    30: "A whole month already! 🌟 How's it been so far? Your honest feedback shapes how we support new folks.",
+}
+
+
+def _survey_link(survey_id: str) -> str:
+    return f"/surveys?survey={survey_id}"
+
+
+def check_onboarding_surveys() -> dict:
+    """Nudge employees at onboarding milestones (day 1 / 7 / 30).
+
+    Uses ``User.created_at`` as the hire-date proxy (no dedicated hire_date
+    column exists). Points at the canonical onboarding survey so the response
+    is structured. Delivered as an active one-time reminder so it rides the
+    existing dispatch + live-SSE path. Deduped per user per milestone.
+    """
+    db = SessionLocal()
+    try:
+        from .lifecycle_surveys import ensure_lifecycle_surveys, get_lifecycle_survey
+
+        now = utcnow_naive()
+        today = now.date()
+        users = (
+            db.query(User)
+            .filter(User.role == UserRole.employee, User.status == UserStatus.active)
+            .all()
+        )
+
+        survey = get_lifecycle_survey(db, "onboarding")
+        if survey is None:
+            ensure_lifecycle_surveys(db)
+            survey = get_lifecycle_survey(db, "onboarding")
+        survey_id = str(survey.id) if survey else None
+
+        sent = 0
+        for user in users:
+            created = getattr(user, "created_at", None)
+            if created is None:
+                continue
+            days_since = (today - created.date()).days
+            if days_since not in ONBOARDING_MILESTONES:
+                continue
+
+            rule_name = f"onboarding_survey_d{days_since}"
+            existing = (
+                db.query(AutomationAction)
+                .filter(
+                    AutomationAction.rule_name == rule_name,
+                    AutomationAction.user_id == user.id,
+                )
+                .first()
+            )
+            if existing:
+                continue
+
+            message = ONBOARDING_MILESTONES[days_since]
+            payload = {}
+            if survey_id:
+                message = f"{message}\n\nShare your feedback here: {_survey_link(survey_id)}"
+                payload = {"survey_id": survey_id, "action_url": _survey_link(survey_id)}
+
+            db.add(
+                AutomationAction(
+                    rule_name=rule_name,
+                    user_id=user.id,
+                    target_type="user",
+                    action_type="nudge",
+                    status="sent",
+                    executed_at=now,
+                    trigger_context={"milestone_day": days_since, "survey_id": survey_id},
+                )
+            )
+            db.add(
+                ReminderSchedule(
+                    user_id=user.id,
+                    reminder_type="onboarding_survey",
+                    title=f"Onboarding check-in (day {days_since})",
+                    message=message,
+                    schedule_kind="one_time",
+                    run_at=now,
+                    timezone="UTC",
+                    status="active",
+                    next_trigger_at=now,
+                    payload=payload,
+                )
+            )
+            sent += 1
+
+        db.commit()
+        logger.info(f"Onboarding survey job completed: sent={sent}")
+        return {"sent": sent, "checked_at": now.isoformat()}
+    except Exception as e:
+        logger.exception("Onboarding survey job failed")
+        db.rollback()
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+def check_exit_surveys() -> dict:
+    """Invite a departing employee to an exit check-in around their last day.
+
+    Fires once when ``departure_at`` is within the next 2 days (or already
+    passed but within the last 2 days), deduped per user. Uses the same
+    deliver-live reminder path as onboarding.
+    """
+    db = SessionLocal()
+    try:
+        now = utcnow_naive()
+        window_start = now - timedelta(days=2)
+        window_end = now + timedelta(days=2)
+        users = (
+            db.query(User)
+            .filter(
+                User.role == UserRole.employee,
+                User.departure_at.isnot(None),
+                User.departure_at >= window_start,
+                User.departure_at <= window_end,
+            )
+            .all()
+        )
+
+        from .lifecycle_surveys import ensure_lifecycle_surveys, get_lifecycle_survey
+
+        survey = get_lifecycle_survey(db, "exit")
+        if survey is None:
+            ensure_lifecycle_surveys(db)
+            survey = get_lifecycle_survey(db, "exit")
+        survey_id = str(survey.id) if survey else None
+
+        sent = 0
+        for user in users:
+            existing = (
+                db.query(AutomationAction)
+                .filter(
+                    AutomationAction.rule_name == "exit_survey",
+                    AutomationAction.user_id == user.id,
+                )
+                .first()
+            )
+            if existing:
+                continue
+
+            message = (
+                "As you wrap up here, I'd love a few honest words about your "
+                "experience — what worked, what didn't. It genuinely helps the "
+                "folks who come after you. 💙"
+            )
+            payload = {}
+            if survey_id:
+                message = f"{message}\n\nShare your reflections here: {_survey_link(survey_id)}"
+                payload = {"survey_id": survey_id, "action_url": _survey_link(survey_id)}
+
+            db.add(
+                AutomationAction(
+                    rule_name="exit_survey",
+                    user_id=user.id,
+                    target_type="user",
+                    action_type="nudge",
+                    status="sent",
+                    executed_at=now,
+                    trigger_context={"departure_at": user.departure_at.isoformat(), "survey_id": survey_id},
+                )
+            )
+            db.add(
+                ReminderSchedule(
+                    user_id=user.id,
+                    reminder_type="exit_survey",
+                    title="Before you go",
+                    message=message,
+                    schedule_kind="one_time",
+                    run_at=now,
+                    timezone="UTC",
+                    status="active",
+                    next_trigger_at=now,
+                    payload=payload,
+                )
+            )
+            sent += 1
+
+        db.commit()
+        logger.info(f"Exit survey job completed: sent={sent}")
+        return {"sent": sent, "checked_at": now.isoformat()}
+    except Exception as e:
+        logger.exception("Exit survey job failed")
+        db.rollback()
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
 def start_scheduler():
     if scheduler.running:
         logger.warning("Scheduler already running")
@@ -1014,6 +1208,22 @@ def start_scheduler():
         trigger=IntervalTrigger(hours=1),
         id="repeated_complaints_job",
         name="Repeated Complaints Check",
+        replace_existing=True
+    )
+
+    scheduler.add_job(
+        check_onboarding_surveys,
+        trigger=IntervalTrigger(hours=24),
+        id="onboarding_survey_job",
+        name="Onboarding Survey Nudges",
+        replace_existing=True
+    )
+
+    scheduler.add_job(
+        check_exit_surveys,
+        trigger=IntervalTrigger(hours=24),
+        id="exit_survey_job",
+        name="Exit Survey Nudges",
         replace_existing=True
     )
 

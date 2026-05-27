@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..models.activity_event import ActivityEvent
+from ..models.employee_score import EmployeeScore
 from ..core.time import utcnow_naive
+from .realtime_bus import realtime_bus
+
+logger = logging.getLogger(__name__)
 from ..models.automation_action import AutomationAction
 from ..models.automation_rule import AutomationRule
 from ..models.conversation import Conversation, Message, MessageSender
@@ -176,6 +184,115 @@ class MarkProactiveService:
             .first()
         )
         return recent is not None
+
+    def _recent_activity_count(self, user_id: UUID, now: datetime) -> int:
+        window_start = now - timedelta(hours=2, minutes=30)
+        return (
+            self.db.query(func.count(ActivityEvent.id))
+            .filter(
+                ActivityEvent.user_id == user_id,
+                ActivityEvent.event_at >= window_start,
+                ActivityEvent.event_type.in_(list(self.ACTIVE_EVENT_TYPES)),
+            )
+            .scalar()
+            or 0
+        )
+
+    def decide_nudge_eligibility(
+        self,
+        *,
+        user_id: UUID,
+        nudge_type: str,
+        message: str,
+        now: Optional[datetime] = None,
+    ) -> Tuple[bool, str]:
+        """Optional LLM gate: would this nudge actually help the user right now?
+
+        Returns ``(eligible, reason)``. When ``NUDGE_AI_GATING_ENABLED`` is off
+        this is a no-op that always allows. Any LLM/parse error fails OPEN so a
+        legitimate nudge is never silently dropped by an outage.
+        """
+        if not bool(getattr(settings, "NUDGE_AI_GATING_ENABLED", False)):
+            return True, "ai_gating_disabled"
+
+        now = now or utcnow_naive()
+        score_row = (
+            self.db.query(EmployeeScore)
+            .filter(EmployeeScore.employee_id == user_id)
+            .first()
+        )
+        sentiment = int(score_row.sentiment_score) if score_row else 50
+        activity = self._recent_activity_count(user_id, now)
+        last_nudge = (
+            self.db.query(AutomationAction.created_at)
+            .filter(
+                AutomationAction.user_id == user_id,
+                AutomationAction.action_type.in_(["nudge", "reminder", "followup_offer"]),
+            )
+            .order_by(AutomationAction.created_at.desc())
+            .limit(1)
+            .scalar()
+        )
+        mins_since_last = (
+            int((now - last_nudge).total_seconds() // 60) if last_nudge else None
+        )
+
+        prompt = (
+            "You decide whether a workplace wellbeing bot should send a nudge "
+            "right now. Be conservative — only say yes if it genuinely helps and "
+            "won't feel intrusive.\n\n"
+            f"Nudge type: {nudge_type}\n"
+            f"Draft message: {message}\n"
+            f"User sentiment score (0=low, 100=great): {sentiment}\n"
+            f"Active events in last 2.5h: {activity}\n"
+            f"Minutes since last nudge: {mins_since_last if mins_since_last is not None else 'never'}\n\n"
+            'Reply with strict JSON: {"send": true|false, "reason": "<short reason>"}'
+        )
+
+        try:
+            from ..ai_client import get_ai_client
+
+            client = get_ai_client()
+            resp = client.chat_completion(
+                messages=[
+                    {"role": "system", "content": "You are a concise, caring decision engine. Output only JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=120,
+            )
+            content = resp["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            send = bool(parsed.get("send", True))
+            reason = str(parsed.get("reason", "")).strip()[:200] or "ai_decision"
+            return send, reason
+        except Exception as exc:  # fail open — never block a nudge on an outage
+            logger.warning("Nudge AI gate failed open: %s", exc)
+            return True, "ai_gate_error_failopen"
+
+    def _publish_user_nudge(
+        self,
+        user_id: UUID,
+        message: str,
+        nudge_type: str,
+        action_url: Optional[str] = None,
+    ) -> None:
+        """Best-effort live delivery of a nudge to the user's open chat (SSE).
+
+        ``action_url`` (optional) lets the client render a CTA button, e.g. a
+        deep link to a lifecycle survey.
+        """
+        payload: Dict[str, Any] = {
+            "user_id": str(user_id),
+            "message": message,
+            "nudge_type": nudge_type,
+        }
+        if action_url:
+            payload["action_url"] = action_url
+        try:
+            asyncio.run(realtime_bus.publish("user_nudge", payload))
+        except Exception:
+            pass
 
     @staticmethod
     def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
@@ -483,19 +600,32 @@ class MarkProactiveService:
                             "event_at": event.event_at.isoformat() if event.event_at else now.isoformat(),
                             "nudge": None,
                         }
-                    nudge_message = "Hey, you've been active for a while. A quick break might help."
-                    self.db.add(
-                        AutomationAction(
-                            rule_name="break_reminder",
-                            user_id=user_id,
-                            target_type="user",
-                            action_type="nudge",
-                            trigger_event_id=event.id,
-                            trigger_context={"event_type": event_type, "active_count": active_count},
-                            status="sent",
-                            executed_at=now,
-                        )
+                    candidate_message = "Hey, you've been active for a while. A quick break might help."
+                    eligible, reason = self.decide_nudge_eligibility(
+                        user_id=user_id,
+                        nudge_type="break_reminder",
+                        message=candidate_message,
+                        now=now,
                     )
+                    if eligible:
+                        nudge_message = candidate_message
+                        self.db.add(
+                            AutomationAction(
+                                rule_name="break_reminder",
+                                user_id=user_id,
+                                target_type="user",
+                                action_type="nudge",
+                                trigger_event_id=event.id,
+                                trigger_context={
+                                    "event_type": event_type,
+                                    "active_count": active_count,
+                                    "ai_gate_reason": reason,
+                                },
+                                status="sent",
+                                executed_at=now,
+                            )
+                        )
+                        self._publish_user_nudge(user_id, nudge_message, "break_reminder")
 
         self.db.commit()
         return {
@@ -556,6 +686,33 @@ class MarkProactiveService:
         self.db.commit()
         self.db.refresh(row)
         return row
+
+    def schedule_medication_reminder(
+        self,
+        user_id: UUID,
+        medication: str,
+        run_at: datetime,
+        *,
+        daily: bool = True,
+        timezone: str = "UTC",
+    ) -> ReminderSchedule:
+        """Convenience wrapper for a (typically recurring) medication reminder.
+
+        Stores only the medication label + time — never a diagnosis — and rides
+        the existing reminder pipeline (scheduler fires it; Phase 2 SSE delivers
+        it live to the user's chat).
+        """
+        label = (medication or "your medication").strip()
+        return self.create_reminder(
+            user_id=user_id,
+            reminder_type="medication",
+            title=f"Medication: {label}",
+            message=f"💊 Time to take {label}. Take care of yourself!",
+            schedule_kind="daily" if daily else "one_time",
+            run_at=run_at,
+            timezone=timezone or "UTC",
+            payload={"medication": label},
+        )
 
     def list_reminders(self, user_id: UUID, include_cancelled: bool = False) -> List[ReminderSchedule]:
         q = self.db.query(ReminderSchedule).filter(ReminderSchedule.user_id == user_id)
@@ -850,6 +1007,13 @@ class MarkProactiveService:
             )
             sent += 1
             row.last_triggered_at = now
+            action_url = (row.payload or {}).get("action_url") if isinstance(row.payload, dict) else None
+            self._publish_user_nudge(
+                row.user_id,
+                row.message or row.title or "You have a reminder.",
+                row.reminder_type or "scheduled_reminder",
+                action_url=action_url,
+            )
 
             if row.schedule_kind == "one_time":
                 row.status = "cancelled"

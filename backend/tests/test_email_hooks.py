@@ -6,7 +6,7 @@ def test_email_draft_triggers_webhook_event(client, auth_headers, monkeypatch):
 
     captured = {}
 
-    def fake_generate_draft(self, email_type: str, tone: str, context=None):
+    def fake_generate_draft(self, email_type: str, tone: str, context=None, **_kwargs):
         return {
             "subject": "Draft subject",
             "body": "Draft body",

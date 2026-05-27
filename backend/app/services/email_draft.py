@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 from uuid import UUID
 from sqlalchemy.orm import Session
 from ..ai_client import get_ai_client
@@ -6,6 +6,9 @@ from ..config import settings
 
 EMAIL_TYPES = ["leave_request", "follow_up", "complaint", "resignation", "general"]
 TONES = ["formal", "neutral", "friendly"]
+
+_CONTEXT_MESSAGE_LIMIT = 20
+_CONTEXT_CHARS_PER_MESSAGE = 280
 
 
 class EmailDraftService:
@@ -23,23 +26,25 @@ class EmailDraftService:
             use_mock = not has_real_config
 
         self.ai_client = get_ai_client(use_mock=use_mock)
-    
+
     def generate_draft(
         self,
         email_type: str,
         tone: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         if tone not in TONES:
             raise ValueError(f"Invalid tone. Must be one of: {TONES}")
-        
+
         if email_type not in EMAIL_TYPES:
             raise ValueError(f"Invalid email type. Must be one of: {EMAIL_TYPES}")
-        
+
         context = context or {}
-        
-        prompt = self._build_prompt(email_type, tone, context)
-        
+
+        recent_transcript = self._load_recent_transcript(conversation_id) if conversation_id else []
+        prompt = self._build_prompt(email_type, tone, context, recent_transcript)
+
         response = self.ai_client.chat_completion(
             messages=[
                 {"role": "system", "content": "You are an expert email writer. Generate professional workplace emails."},
@@ -61,16 +66,44 @@ class EmailDraftService:
             "body": body.strip(),
             "tone": tone,
             "type": email_type,
-            "context": context
+            "context": context,
+            "grounded_in_conversation": bool(recent_transcript),
         }
-        
+
         # Store in database if db provided
         if self.db and self.user_id:
             result["draft_id"] = self._save_draft(result)
-        
+
         return result
-    
-    def _build_prompt(self, email_type: str, tone: str, context: Dict[str, Any]) -> str:
+
+    def _load_recent_transcript(self, conversation_id: UUID) -> List[str]:
+        if not self.db:
+            return []
+        try:
+            from .chat import ChatService
+
+            messages = ChatService(self.db).get_conversation_context(
+                conversation_id, limit=_CONTEXT_MESSAGE_LIMIT
+            )
+        except Exception:
+            return []
+        lines: List[str] = []
+        for m in messages:
+            sender = getattr(m, "sender", None)
+            sender_label = getattr(sender, "value", str(sender)) if sender is not None else "user"
+            text = (getattr(m, "message_text", "") or "").strip()
+            if not text:
+                continue
+            lines.append(f"{sender_label}: {text[:_CONTEXT_CHARS_PER_MESSAGE]}")
+        return lines
+
+    def _build_prompt(
+        self,
+        email_type: str,
+        tone: str,
+        context: Dict[str, Any],
+        recent_transcript: Optional[List[str]] = None,
+    ) -> str:
         templates = {
             "leave_request": "Write a leave request email",
             "follow_up": "Write a follow-up email",
@@ -99,9 +132,16 @@ class EmailDraftService:
         
         if context.get("additional_info"):
             prompt += f" Additional context: {context['additional_info']}."
-        
+
+        if recent_transcript:
+            prompt += (
+                "\n\nRECENT CONVERSATION (use this to ground the subject and body in"
+                " what actually happened; do not quote it verbatim):\n"
+                + "\n".join(recent_transcript)
+            )
+
         prompt += f"\n\nFormat as: Subject: <subject>\n\n<body>"
-        
+
         return prompt
     
     def _save_draft(self, draft: Dict[str, Any]) -> UUID:

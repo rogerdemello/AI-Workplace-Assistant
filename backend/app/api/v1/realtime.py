@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ...auth import require_roles
+from ...auth import get_current_user, require_roles
 from ...database import get_db
 from ...models.hr_notification import HrNotification
 from ...models.ticket import Ticket, TicketStatus
@@ -71,5 +71,41 @@ async def hr_realtime_stream(
             finally:
                 await realtime_bus.unsubscribe(queue)
                 break
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/me/stream")
+async def employee_realtime_stream(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Per-user SSE stream. Forwards events addressed to this user (e.g.
+    ``user_nudge``) so proactive nudges land in the open chat immediately,
+    instead of waiting for the next 15-minute polling cycle."""
+
+    user_id = str(current_user.id)
+
+    def _event(name: str, payload: dict) -> str:
+        return f"event: {name}\ndata: {json.dumps(payload)}\n\n"
+
+    async def event_stream():
+        queue = await realtime_bus.subscribe()
+        try:
+            # Initial comment so proxies flush headers and the client opens.
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    message = await asyncio.wait_for(queue.get(), timeout=20)
+                    payload = message.get("payload", {}) or {}
+                    if str(payload.get("user_id", "")) != user_id:
+                        continue  # not addressed to this user
+                    yield _event(str(message.get("event_type", "user_update")), payload)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # heartbeat keeps the connection alive
+        finally:
+            await realtime_bus.unsubscribe(queue)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

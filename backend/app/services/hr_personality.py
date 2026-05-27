@@ -177,6 +177,33 @@ LONG_TIME_OPENERS = [
     "Look who it is! 👋 Tell me what's going on!",
 ]
 
+FIRST_TIME_OPENERS = [
+    "Hey! I'm Mark — your friendly HR partner. Glad you're here. What can I help with today?",
+    "Welcome aboard! 👋 I'm Mark. Anything on your mind I can help with — leave, a quick question, or just a chat?",
+    "Hi there! Mark here, your HR sidekick. Tell me what's up and I'll take it from there.",
+    "Hey 👋 First time? I'm Mark — leave requests, tickets, or just venting are all fair game. What's going on?",
+    "Welcome! I'm Mark. Think of me as the HR person who actually picks up. What can I do for you?",
+]
+
+# First chat of the day — warm, invites a mood check-in. Frontend pairs these
+# with mood chips when suggested_mood_checkin is set.
+DAILY_CHECKIN_OPENERS = [
+    "Morning! ☀️ How are you feeling today?",
+    "Hey, good to see you today 😊 How's your morning going?",
+    "Hi! Before we dive in — how are you doing today?",
+    "Hey there 👋 Quick check-in: how are you feeling right now?",
+    "Good to see you! How's the day treating you so far?",
+]
+
+# End-of-day wind-down — reflective, lower-key.
+WIND_DOWN_OPENERS = [
+    "Winding down? 🌙 How did today go?",
+    "Hey — long day? How are you feeling as you wrap up?",
+    "End of the day already! How did everything go today?",
+    "Before you log off — how was your day?",
+    "Hope today went okay 🌆 Anything you want to talk through before you head out?",
+]
+
 ROBOTIC_TO_HUMAN = {
     "I understand your concern": "That sounds rough 😔",
     "How can I assist you?": "Want me to help with this?",

@@ -93,6 +93,43 @@ export async function cancelReminder(reminderId: string): Promise<boolean> {
   return Boolean(row !== null);
 }
 
+export async function createMedicationReminder(input: {
+  medication: string;
+  /** "HH:MM" local time the reminder should fire each day. */
+  time: string;
+}): Promise<ReminderRow | null> {
+  const label = input.medication.trim();
+  if (!label) return null;
+  // Compute the next occurrence of HH:MM (today if still ahead, else tomorrow).
+  const [h, m] = input.time.split(":").map((n) => parseInt(n, 10));
+  const next = new Date();
+  next.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0);
+  if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+  const row = await postJson<Record<string, unknown>>("/api/v1/wellbeing/reminders", {
+    reminder_type: "medication",
+    title: `Medication: ${label}`,
+    message: `💊 Time to take ${label}. Take care of yourself!`,
+    schedule_kind: "daily",
+    run_at: next.toISOString(),
+    timezone: tz,
+    payload: { medication: label },
+  });
+  if (!row) return null;
+  return {
+    id: String(row.id ?? ""),
+    reminder_type: String(row.reminder_type ?? "medication"),
+    title: String(row.title ?? ""),
+    message: String(row.message ?? ""),
+    schedule_kind: String(row.schedule_kind ?? "daily"),
+    run_at: row.run_at ? String(row.run_at) : null,
+    status: String(row.status ?? "active"),
+    next_trigger_at: row.next_trigger_at ? String(row.next_trigger_at) : null,
+    created_at: String(row.created_at ?? ""),
+  };
+}
+
 export interface MoodTrend {
   average_score: number | null;
   trend: string;

@@ -31,6 +31,7 @@ from .automation_rule import AutomationRule
 from .sentiment_log import SentimentLog
 from .employee_score import EmployeeScore
 from .message_signal import MessageSignal
+from .anonymous_feedback import AnonymousFeedback
 
 __all__ = [
     "User", "UserRole", "UserStatus", "Department",
@@ -72,4 +73,5 @@ __all__ = [
     "WebhookEventType",
     "WebhookStatus",
     "SlackIntegration",
+    "AnonymousFeedback",
 ]
