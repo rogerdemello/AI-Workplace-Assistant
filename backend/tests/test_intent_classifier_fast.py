@@ -34,7 +34,10 @@ class TestFastClassify:
             ("Hi there!", "general_query"),
             ("Hello, good morning", "general_query"),
             ("Thanks for your help", "general_query"),
-            ("Help me with something", "general_query"),
+            # "help me with X" is the topical-help route (ordered before generic help)
+            ("Help me with something", "help_request"),
+            # bare "I need help" is generic → general_query
+            ("I need help", "general_query"),
         ],
     )
     def test_fast_route_hits(self, classifier, message, expected_intent):
@@ -67,6 +70,7 @@ class TestFastClassify:
                 "email_draft",
                 "emotional",
                 "general_query",
+                "help_request",
             }
             assert 0.8 <= conf <= 1.0
             assert reason.startswith("Fast-path:")

@@ -16,6 +16,9 @@ class Survey(Base):
     questions = Column(JSON, nullable=False)
     is_active = Column(Boolean, default=True)
     allow_anonymous = Column(Boolean, default=False)
+    # Optional lifecycle tag so nudges can target the right survey
+    # (e.g. "onboarding", "exit", "pulse"). Null = a generic ad-hoc survey.
+    survey_type = Column(String(32), nullable=True, index=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime, default=utcnow_naive)
     

@@ -123,7 +123,9 @@ async function getTokenForSession(_session: AuthSession | null): Promise<string 
 }
 
 /** Creates a server conversation and returns MARK's proactive first message (employee chat). */
-export async function startChatSession(session: AuthSession | null): Promise<{ conversationId: string; greeting: string } | null> {
+export async function startChatSession(
+  session: AuthSession | null,
+): Promise<{ conversationId: string; greeting: string; suggestedMoodCheckin: boolean } | null> {
   const token = await getTokenForSession(session);
   if (!token) {
     return null;
@@ -136,13 +138,17 @@ export async function startChatSession(session: AuthSession | null): Promise<{ c
     if (!res.ok) {
       return null;
     }
-    const data = (await res.json()) as { conversation_id?: string; greeting?: string };
+    const data = (await res.json()) as {
+      conversation_id?: string;
+      greeting?: string;
+      suggested_mood_checkin?: boolean;
+    };
     const conversationId = data.conversation_id ? String(data.conversation_id) : "";
     const greeting = String(data.greeting || "").trim();
     if (!conversationId || !greeting) {
       return null;
     }
-    return { conversationId, greeting };
+    return { conversationId, greeting, suggestedMoodCheckin: Boolean(data.suggested_mood_checkin) };
   } catch {
     return null;
   }

@@ -33,6 +33,9 @@ class User(Base):
     designation = Column(String(100))
     manager_id = Column(UUID, ForeignKey("users.id"), nullable=True)
     status = Column(SQLEnum(UserStatus), default=UserStatus.active, index=True)
+    # Set when an employee's departure is known, so MARK can trigger an exit
+    # survey/check-in around that date. Nullable — most active users have none.
+    departure_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=utcnow_naive)
     updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     

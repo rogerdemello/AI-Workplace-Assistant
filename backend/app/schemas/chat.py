@@ -137,6 +137,7 @@ class ChatResponse(BaseModel):
 class ConversationStartResponse(BaseModel):
     conversation_id: UUID
     greeting: str
+    suggested_mood_checkin: bool = False
 
 
 __all__ = [

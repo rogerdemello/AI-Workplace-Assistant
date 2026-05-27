@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_WHATSAPP_FROM: str = ""
+    # When true, validates X-Twilio-Signature on inbound /whatsapp/webhook hits.
+    # Set false for local ngrok testing where URL rewriting breaks the HMAC.
+    WHATSAPP_VALIDATE_SIGNATURE: bool = True
     LIFE_WEATHER_BASE_URL: str = "https://api.open-meteo.com/v1/forecast"
     LIFE_GEOCODE_BASE_URL: str = "https://geocoding-api.open-meteo.com/v1/search"
     LIFE_PLACES_API_URL: str = ""
@@ -75,6 +78,23 @@ class Settings(BaseSettings):
     ENABLE_MARK_INTELLIGENCE_PIPELINE: bool = True
     INTELLIGENCE_USE_LLM: bool = True
     INTELLIGENCE_ASYNC_QUEUE_ENABLED: bool = False
+
+    # Employee Assistance Program resources surfaced when the bot detects distress.
+    # JSON list of {label, url, description}; empty string falls back to safe defaults.
+    EAP_RESOURCES_JSON: str = ""
+
+    # IANA timezone used to compute "today" and "end of day" for daily-ritual
+    # greetings when a user has no per-user timezone. Falls back to UTC if invalid.
+    DEFAULT_DISPLAY_TIMEZONE: str = "Asia/Kolkata"
+    # Local hour (0–23) at/after which the first chat of the day uses the
+    # end-of-day wind-down opener instead of the morning check-in.
+    WIND_DOWN_HOUR: int = 17
+
+    # When true, proactive nudges that pass the rule-based suppression gate are
+    # additionally checked by an LLM ("would this nudge help right now?").
+    # Default off so behaviour is rule-only and no per-nudge LLM cost is incurred
+    # until explicitly enabled. Fails open (allows the nudge) on any LLM error.
+    NUDGE_AI_GATING_ENABLED: bool = False
 
     SUPABASE_URL: Optional[str] = None
     SUPABASE_SERVICE_KEY: Optional[str] = None

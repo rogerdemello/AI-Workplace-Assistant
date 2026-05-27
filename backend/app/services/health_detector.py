@@ -27,6 +27,22 @@ HEALTH_KEYWORDS = [
     "exhausted",
 ]
 
+# Keywords that signal a user wants help remembering medication. Kept separate
+# from HEALTH_KEYWORDS so "I'm sick" (a concern) and "remind me to take my
+# medicine" (a scheduling intent) route differently.
+MEDICATION_KEYWORDS = [
+    "medicine",
+    "medication",
+    "meds",
+    "pill",
+    "tablet",
+    "prescription",
+    "dose",
+    "dosage",
+    "antibiotic",
+    "insulin",
+]
+
 
 def detect_health_keywords(message: str) -> Dict[str, Any]:
     """
@@ -72,7 +88,22 @@ def detect_health_keywords(message: str) -> Dict[str, Any]:
     }
 
 
+def detect_medication_intent(message: str) -> Dict[str, Any]:
+    """Detect whether a message is about medication (e.g. wanting a reminder).
+
+    Returns ``{has_medication_intent, keywords}``. Pairs with a "remind"/"every"
+    cue at the call site to decide whether to offer scheduling a reminder.
+    """
+    if not message:
+        return {"has_medication_intent": False, "keywords": []}
+    lowered = message.lower()
+    detected = [kw for kw in MEDICATION_KEYWORDS if kw in lowered]
+    return {"has_medication_intent": bool(detected), "keywords": detected}
+
+
 __all__ = [
     "HEALTH_KEYWORDS",
+    "MEDICATION_KEYWORDS",
     "detect_health_keywords",
+    "detect_medication_intent",
 ]

@@ -6,6 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useEffect, useState } from "react";
 import { CalendarConnectCard } from "@/components/employee/CalendarConnectCard";
 import { WhatsappLinkCard } from "@/components/employee/WhatsappLinkCard";
+import { MedicationReminderCard } from "@/components/employee/MedicationReminderCard";
 import {
   cancelReminder,
   getPortalChats,
@@ -351,6 +352,8 @@ export default function Employee() {
             </ul>
           )}
         </div>
+
+        <MedicationReminderCard />
 
         <WhatsappLinkCard />
 

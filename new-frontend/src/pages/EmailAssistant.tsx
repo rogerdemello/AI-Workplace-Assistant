@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { Sparkles, RefreshCw, Send, Copy, Check } from "lucide-react";
+import { Sparkles, RefreshCw, Send, Copy, Check, MessageSquareText } from "lucide-react";
 import { draftEmail, sendEmail } from "@/lib/services";
 import { toast } from "sonner";
 
@@ -11,6 +12,8 @@ const samples = [
 ];
 
 export default function EmailAssistant() {
+  const [searchParams] = useSearchParams();
+  const conversationId = useMemo(() => searchParams.get("conversation_id") || undefined, [searchParams]);
   const [to, setTo] = useState("");
   const [cc, setCc] = useState("");
   const [ctx, setCtx] = useState("");
@@ -22,6 +25,7 @@ export default function EmailAssistant() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sendStatus, setSendStatus] = useState<string | null>(null);
+  const [groundedInConversation, setGroundedInConversation] = useState(false);
 
   const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
   const parseCcEmails = (input: string): string[] =>
@@ -37,7 +41,7 @@ export default function EmailAssistant() {
     setSubject("");
     setError(null);
     setSendStatus(null);
-    const result = await draftEmail({ context: ctx, toneLabel: tone });
+    const result = await draftEmail({ context: ctx, toneLabel: tone, conversationId });
     setGenerating(false);
     if (!result) {
       setError("Could not reach the email draft API. Check login and backend availability.");
@@ -46,7 +50,8 @@ export default function EmailAssistant() {
     }
     setSubject(result.subject);
     setDraft(result.body);
-    toast.success("Draft ready.");
+    setGroundedInConversation(result.groundedInConversation);
+    toast.success(result.groundedInConversation ? "Draft ready (grounded in your recent chat)." : "Draft ready.");
   };
 
   const copy = async () => {
@@ -183,7 +188,22 @@ export default function EmailAssistant() {
         </div>
 
         <div className="rounded-2xl border border-border bg-card p-6 flex flex-col">
-          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground mb-4">Draft</div>
+          <div className="flex items-center justify-between mb-4 gap-2">
+            <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Draft</div>
+            {conversationId && (
+              <div
+                className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-border bg-secondary/40 text-muted-foreground"
+                title={
+                  groundedInConversation
+                    ? "This draft was grounded in your recent chat."
+                    : "We'll use context from your recent chat when you draft."
+                }
+              >
+                <MessageSquareText className="size-3" />
+                {groundedInConversation ? "Using chat context" : "Chat context ready"}
+              </div>
+            )}
+          </div>
           <div className="flex-1 min-h-[200px] rounded-xl bg-secondary/30 p-4 text-sm whitespace-pre-wrap">
             {subject && <div className="font-medium mb-2">Subject: {subject}</div>}
             {draft || <span className="text-muted-foreground">Generated email will appear here.</span>}

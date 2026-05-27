@@ -10,7 +10,25 @@ import {
 } from "@/lib/chat-api";
 import { mapFlowMetadataToControl } from "@/lib/flow-metadata-ui";
 import { loadChatSnapshot, saveChatSnapshot } from "@/lib/chat-session-storage";
+import { logMyMood } from "@/lib/api/portal";
+import { subscribeToSse } from "@/lib/api/client";
 import type { ChatRecord, ControlState, FlowMetadata, MemoryCard } from "@/types/chat";
+
+export type MoodChoice = { emoji: "🙂" | "😐" | "😟" | "😔"; score: number; label: string };
+
+export const MOOD_CHOICES: MoodChoice[] = [
+  { emoji: "🙂", score: 80, label: "Good" },
+  { emoji: "😐", score: 55, label: "Okay" },
+  { emoji: "😟", score: 35, label: "Meh" },
+  { emoji: "😔", score: 15, label: "Low" },
+];
+
+const MOOD_ACKS: Record<string, string> = {
+  "🙂": "Love to hear it 😊 What's on your plate today?",
+  "😐": "Got it — a steady kind of day. I'm here if anything comes up.",
+  "😟": "Thanks for being honest. Want to talk about what's weighing on you?",
+  "😔": "I'm sorry it's a rough one 💙 I'm here — want to share what's going on?",
+};
 
 export type ChatMode = "minimized" | "panel" | "full";
 
@@ -34,11 +52,17 @@ interface ChatContextValue {
   pendingCsat: boolean;
   submitCsatRating: (rating: number) => Promise<void>;
   dismissCsat: () => void;
+  /** True when the daily greeting invited a mood check-in; renders mood chips. */
+  moodCheckinActive: boolean;
+  logMoodCheckin: (choice: MoodChoice) => Promise<void>;
+  dismissMoodCheckin: () => void;
   /** Clear local thread, persist a fresh snapshot, and best-effort close the server conversation. */
   startNewChat: () => void;
   unreadCount: number;
   /** Employee chat: false until server conversation + proactive greeting are loaded (avoids duplicate /start). */
   chatReady: boolean;
+  /** Active backend conversation id, when known — used to ground downstream actions (e.g. "draft an email about this") in the current chat. */
+  conversationId: string | null;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -60,6 +84,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [isSending, setIsSending] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [memoryCards, setMemoryCards] = useState<MemoryCard[]>([]);
+  const [moodCheckinActive, setMoodCheckinActive] = useState(false);
   const [pendingCsatMeta, setPendingCsatMeta] = useState<{ conversationId?: string; intent?: string; sentiment?: string } | null>(null);
   const hydratedRef = useRef(false);
   const lastActivityRef = useRef(Date.now());
@@ -77,6 +102,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       return currentMode;
     });
   }, []);
+
+  const logMoodCheckin = useCallback(
+    async (choice: MoodChoice) => {
+      setMoodCheckinActive(false);
+      // Echo the user's pick into the thread so the conversation reads naturally.
+      setMessages((current) => [
+        ...current,
+        { id: shortId(), role: "user", text: `${choice.emoji} ${choice.label}` },
+      ]);
+      const ok = await logMyMood({ moodEmoji: choice.emoji, moodScore: choice.score });
+      if (!ok) {
+        appendAssistant("I couldn't save that just now, but I'm still here. What's up?");
+        return;
+      }
+      appendAssistant(MOOD_ACKS[choice.emoji] ?? "Thanks for checking in 💙 What's on your mind?");
+    },
+    [appendAssistant],
+  );
+
+  const dismissMoodCheckin = useCallback(() => setMoodCheckinActive(false), []);
 
   const createAssistantStreamTarget = useCallback(() => {
     const id = shortId();
@@ -116,6 +161,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setFlowMetadata(null);
       setControl(defaultControl());
       setPendingCsatMeta(null);
+      setMoodCheckinActive(false);
       hydratedRef.current = true;
       return () => {
         cancelled = true;
@@ -129,6 +175,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setFlowMetadata(fm);
       setControl(mapFlowMetadataToControl(fm));
       setPendingCsatMeta(null);
+      setMoodCheckinActive(false);
       hydratedRef.current = true;
       setChatReady(true);
       return () => {
@@ -143,6 +190,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (started) {
         setMessages([{ id: "open", role: "assistant", text: started.greeting }]);
         setConversationId(started.conversationId);
+        setMoodCheckinActive(Boolean(started.suggestedMoodCheckin));
       } else {
         setMessages([
           {
@@ -172,6 +220,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }, 250);
     return () => clearTimeout(timer);
   }, [messages, conversationId, flowMetadata, session?.email]);
+
+  // Live proactive nudges: employees subscribe to their per-user SSE stream so
+  // a break reminder / scheduled reminder lands in the open chat immediately
+  // instead of waiting for the next polling cycle.
+  useEffect(() => {
+    if (!session?.email || session.role !== "employee") return;
+    const unsubscribe = subscribeToSse("/api/v1/realtime/me/stream", {
+      onEvent: (eventType, payload) => {
+        if (eventType !== "user_nudge") return;
+        const text = typeof payload.message === "string" ? payload.message.trim() : "";
+        if (text) appendAssistant(text);
+      },
+    });
+    return unsubscribe;
+  }, [session?.email, session?.role, appendAssistant]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -483,9 +546,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         pendingCsat: Boolean(pendingCsatMeta),
         submitCsatRating,
         dismissCsat,
+        moodCheckinActive,
+        logMoodCheckin,
+        dismissMoodCheckin,
         startNewChat,
         unreadCount,
         chatReady,
+        conversationId,
       }}
     >
       {children}

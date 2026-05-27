@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import random
 import re
 
+from ..hr_personality import ANXIETY_OPENERS, EMPATHY_PREFIXES, SUPPORT_OPENERS
 from .base import AgentContext, AgentName, AgentResult
 
 _STRESS = re.compile(
@@ -21,7 +23,10 @@ class EmotionalAgent:
         if ctx.sentiment != "negative" and not explicit_signal:
             return AgentResult(agent=AgentName.EMOTIONAL, handled=False, payload={})
 
-        prefix = "I hear you — thanks for sharing that."
+        if explicit_signal:
+            prefix = random.choice(ANXIETY_OPENERS + SUPPORT_OPENERS)
+        else:
+            prefix = random.choice(EMPATHY_PREFIXES).rstrip(" —").rstrip() + " —"
         # An explicit stress keyword is a stronger signal than a generic
         # negative-sentiment classification — score them differently so the
         # merger can suppress lukewarm overlays.

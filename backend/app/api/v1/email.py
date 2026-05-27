@@ -1,5 +1,6 @@
 import asyncio
 import os
+from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 from typing import Dict, Optional
@@ -23,6 +24,7 @@ class EmailDraftRequest(BaseModel):
     type: str
     tone: str
     context: Optional[Dict] = {}
+    conversation_id: Optional[UUID] = None
 
 
 class EmailDraftResponse(BaseModel):
@@ -31,6 +33,7 @@ class EmailDraftResponse(BaseModel):
     tone: str
     type: str
     context: Dict
+    grounded_in_conversation: bool = False
 
 
 class EmailSendRequest(BaseModel):
@@ -78,9 +81,14 @@ def create_email_draft(
             detail=f"Invalid tone. Must be one of: {TONES}"
         )
     
-    service = EmailDraftService(user_id=current_user.id)
+    service = EmailDraftService(db=db, user_id=current_user.id)
     try:
-        draft = service.generate_draft(request.type, request.tone, request.context)
+        draft = service.generate_draft(
+            request.type,
+            request.tone,
+            request.context,
+            conversation_id=request.conversation_id,
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
