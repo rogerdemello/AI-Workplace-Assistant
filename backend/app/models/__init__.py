@@ -47,6 +47,7 @@ from .audit_log import AuditLog
 from .document import Document, DocumentChunk
 from .meeting_event import MeetingEvent
 from .whatsapp_link import WhatsappLink
+from .offboarding_task import OffboardingTask
 
 __all__ = [
     "User", "UserRole", "UserStatus", "Department",

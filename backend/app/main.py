@@ -49,6 +49,7 @@ from .api.v1.attachments import router as attachments_router
 from .api.v1.mood import router as mood_router
 from .api.v1.appreciation import router as appreciation_router
 from .api.v1.onboarding import router as onboarding_router
+from .api.v1.offboarding import router as offboarding_router
 from .api.v1.buddies import router as buddies_router
 from .api.v1.portal import router as portal_router
 from .api.v1.users_directory import router as users_directory_router
@@ -316,6 +317,7 @@ app.include_router(attachments_router, prefix="/api/v1")
 app.include_router(mood_router, prefix="/api/v1")
 app.include_router(appreciation_router, prefix="/api/v1")
 app.include_router(onboarding_router, prefix="/api/v1")
+app.include_router(offboarding_router, prefix="/api/v1")
 app.include_router(buddies_router, prefix="/api/v1")
 app.include_router(portal_router, prefix="/api/v1")
 app.include_router(users_directory_router, prefix="/api/v1")
