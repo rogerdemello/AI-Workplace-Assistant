@@ -21,6 +21,9 @@ from ...models.sentiment_log import SentimentLog
 from ...models.mood_entry import MoodEntry
 from ...models.conversation import Message, MessageSender, Conversation
 from datetime import datetime as _dt, timedelta as _td
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Single-word acks / fillers carry sentiment but no signal — keep them off
 # the HR timeline so it reads as meaningful events, not noise.
@@ -167,6 +170,12 @@ def admin_update_user(
     if not u:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    # Capture pre-update values so we can fire lifecycle check-ins on real
+    # changes — manager re-assignment / role move are exactly the moments
+    # Infeedo-style listening cares about.
+    old_manager_id = u.manager_id
+    old_designation = u.designation
+
     if payload.name is not None and payload.name.strip():
         u.name = payload.name.strip()
     if payload.email is not None and payload.email.strip():
@@ -191,6 +200,26 @@ def admin_update_user(
     db.add(u)
     db.commit()
     db.refresh(u)
+
+    # Best-effort lifecycle check-ins — failures must not break the PATCH.
+    try:
+        from ...services.lifecycle_surveys import enqueue_lifecycle_check_in
+        if u.manager_id != old_manager_id and u.manager_id is not None:
+            enqueue_lifecycle_check_in(
+                db,
+                user_id=u.id,
+                kind="manager_change",
+                message_text="Heads up — your reporting line just changed. How's it been working with your new manager so far?",
+            )
+        if (u.designation or "") != (old_designation or "") and u.designation:
+            enqueue_lifecycle_check_in(
+                db,
+                user_id=u.id,
+                kind="role_change",
+                message_text=f"You've moved into '{u.designation}'. How's the new role feeling so far?",
+            )
+    except Exception:
+        logger.warning("Lifecycle check-in enqueue failed", exc_info=True)
 
     dept = _dept_map(db)
     dname = dept.get(str(u.department_id), "General") if u.department_id else "General"
