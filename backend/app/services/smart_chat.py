@@ -262,6 +262,18 @@ class SmartChatService:
         "hi": "general_query",
         "hello": "general_query",
         "hey": "general_query",
+        # Specific appreciation phrases — MUST come before the bare "thanks" /
+        # "thank you" entries below so e.g. "thanks to Priya" routes to
+        # appreciation, not the catch-all general_query.
+        "thanks to": "appreciation",
+        "thank you to": "appreciation",
+        "shoutout to": "appreciation",
+        "shout out to": "appreciation",
+        "shout-out to": "appreciation",
+        "kudos to": "appreciation",
+        "credit to": "appreciation",
+        "credit goes to": "appreciation",
+        "hat tip to": "appreciation",
         "thanks": "general_query",
         "thank you": "general_query",
         "bye": "general_query",
@@ -837,6 +849,92 @@ class SmartChatService:
     def _handle_benefits_query(self, message: str) -> str:
         """Handle benefits questions using RAG."""
         return self._handle_policy_query(message)
+
+    # Patterns to extract the colleague being thanked. Lead-in keywords are
+    # case-insensitive (Thanks / THANKS / thanks all match); the captured name
+    # still expects capital-cased proper-name form so we don't grab connectives.
+    _APPRECIATION_TARGET_PATTERNS = (
+        r"(?i:\bthanks?\s+to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bthank\s+you)(?i:\s+to)?\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bappreciat\w+\s+(?:goes\s+)?(?:to|for))\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bshout[-\s]?out\s+to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bkudos\s+to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bcredit\s+(?:goes\s+)?to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bhat\s+tip\s+to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"\b([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)\s+(?i:(?:really\s+|absolutely\s+)?(?:helped|saved|covered|carried|crushed\s+it))",
+    )
+
+    def _extract_appreciation_target(self, message: str) -> Optional[str]:
+        for pattern in self._APPRECIATION_TARGET_PATTERNS:
+            m = re.search(pattern, message)
+            if m:
+                return m.group(1).strip()
+        return None
+
+    def _find_user_by_name_or_email(self, query: str) -> "Optional[User]":
+        from ..models.user import User as _User
+        q = (query or "").strip()
+        if not q:
+            return None
+        if "@" in q:
+            return self.db.query(_User).filter(_User.email == q.lower()).first()
+        # Name match: full-text-ish ILIKE. Prefer exact name first.
+        exact = self.db.query(_User).filter(_User.name.ilike(q)).first()
+        if exact:
+            return exact
+        return self.db.query(_User).filter(_User.name.ilike(f"%{q}%")).first()
+
+    def _handle_appreciation(self, message: str) -> str:
+        """Detect a gratitude-toward-a-colleague message and send a real note.
+
+        Pending target is stashed in flow_context so a follow-up like "Priya"
+        completes the send without retyping the whole phrase.
+        """
+        from ..models.appreciation_note import AppreciationNote
+
+        # If we asked "who?" last turn, the new message IS the target.
+        pending = self.flow_context.pop("_pending_appreciation", None) if self.flow_context else None
+        target_name = None
+        if pending:
+            target_name = message.strip().rstrip("!.?")
+        else:
+            target_name = self._extract_appreciation_target(message)
+
+        if not target_name:
+            self.flow_context["_pending_appreciation"] = True
+            return "Love that. Who should I send the appreciation to? Their name or email works."
+
+        target_user = self._find_user_by_name_or_email(target_name)
+        if not target_user:
+            self.flow_context["_pending_appreciation"] = True
+            return (
+                f"I couldn't find someone named '{target_name}' in the directory. "
+                "Could you share their email so I can route the note?"
+            )
+        if target_user.id == self.user_id:
+            return "Self-appreciation noted 😊 — but a note is meant for someone else. Who actually helped you out?"
+
+        try:
+            note_text = message.strip()[:500] or f"Appreciation from a teammate."
+            self.db.add(
+                AppreciationNote(
+                    from_user_id=self.user_id,
+                    to_user_id=target_user.id,
+                    message=note_text,
+                    is_anonymous=False,
+                )
+            )
+            self.db.commit()
+        except Exception as exc:
+            logger.warning("Appreciation note write failed: %s", exc, exc_info=True)
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            return "I tried to send that note but hit a snag — give me a moment and try again."
+
+        first = (target_user.name or "").split()[0] if target_user.name else "them"
+        return f"Sent — {first} will see your appreciation note 🙌"
 
     def _handle_escalate_ticket(self) -> str:
         """Find the user's most recent open ticket and escalate it."""

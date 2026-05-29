@@ -141,6 +141,15 @@ INTENTS = {
             "Leave days remaining",
         ],
     },
+    "appreciation": {
+        "description": "User wants to send appreciation / kudos / a shout-out to a colleague",
+        "examples": [
+            "Thanks to Priya for closing the bug",
+            "Shoutout to Arjun — saved my release",
+            "Kudos to Ananya for the deck",
+            "Big credit to John for picking up the on-call",
+        ],
+    },
 }
 
 INTENT_LIST = list(INTENTS.keys())
@@ -168,6 +177,10 @@ def _build_fast_routes() -> List[Tuple[re.Pattern, str, float, str]]:
         # Emotional / distress
         (r"\b(i\s+feel\s+(stressed|anxious|depressed|overwhelmed|burned?\s+out|exhausted|hopeless|sad|empty)|i\s+can\'?t\s+cope|mental\s+health|i\s+need\s+therapy|panic\s+attack|want\s+to\s+quit|had\s+enough|not\s+okay|not\s+ok)\b", "emotional", 0.93, "Fast-path: emotional distress signal"),
         # Reminder — NOTE: not fast-pathed; _apply_intent_keyword_fallback handles it after LLM classify
+        # Appreciation — MUST come before the bare "thanks" route below so
+        # "thanks to <name>" doesn't get swallowed as a plain general "thanks".
+        (r"\b(thanks?\s+to\s+[A-Za-z]|thank\s+you\s+to\s+[A-Za-z]|appreciat\w+\s+(?:goes\s+)?to\s+[A-Za-z]|appreciation\s+for\s+[A-Za-z]|shout[-\s]?out\s+to\s+[A-Za-z]|kudos\s+to\s+[A-Za-z]|credit\s+(?:goes\s+)?to\s+[A-Za-z]|hat\s+tip\s+to\s+[A-Za-z])", "appreciation", 0.92, "Fast-path: appreciation toward a person"),
+        (r"\b[A-Z][a-zA-Z]{1,30}(?:\s+[A-Z][a-zA-Z]{1,30})?\s+(?:really\s+|absolutely\s+)?(?:helped|saved|covered|carried|crushed\s+it)\b", "appreciation", 0.85, "Fast-path: <Name> helped/saved me pattern"),
         # Greeting / thanks
         (r"^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening)|what\s+can\s+you\s+do|who\s+are\s+you)([\s,]|$|\!|\?|\.)", "general_query", 0.88, "Fast-path: greeting or intro"),
         (r"^(thanks?|thank\s+you|thx|ty)(\s|$|\!|\.|\?)", "general_query", 0.88, "Fast-path: thanks"),

@@ -213,6 +213,8 @@ class ConversationOrchestrator:
             return self.service._handle_benefits_query(message)
         if intent == "email_draft":
             return self.service._handle_email_draft(message)
+        if intent == "appreciation":
+            return self.service._handle_appreciation(message)
         if intent == "escalate_ticket":
             return self.service._handle_escalate_ticket()
         if intent == "emotional":
