@@ -68,6 +68,23 @@ def _pulse_asked_recently(db: Session, user_id: UUID) -> bool:
     )
 
 
+def _pick_pulse_question(db: Session, user_id: UUID) -> str:
+    """Random pulse question, but never the one most recently asked of this user."""
+    last_row = (
+        db.query(Message.message_text)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .filter(Conversation.user_id == user_id)
+        .filter(Message.sender == MessageSender.bot)
+        .filter(Message.message_text.contains(_PULSE_QUESTION_PREFIX))
+        .order_by(Message.created_at.desc())
+        .first()
+    )
+    last_text = (last_row[0] if last_row else "") or ""
+    asked_last = next((q for q in _PULSE_QUESTIONS if q in last_text), None)
+    pool = [q for q in _PULSE_QUESTIONS if q != asked_last] or list(_PULSE_QUESTIONS)
+    return random.choice(pool)
+
+
 @dataclass
 class ProactiveOpening:
     """Greeting plus UI hints for how the client should frame it."""
@@ -257,7 +274,7 @@ def build_proactive_chat_opening(db: Session, user: User) -> ProactiveOpening:
         # employee is feeling, not just ticket/leave events. Skip when the
         # recent tone is negative — empathy comes first, not another question.
         if tone != "negative" and not _pulse_asked_recently(db, user.id):
-            body = f"{body}\n\n{_PULSE_QUESTION_PREFIX} {random.choice(_PULSE_QUESTIONS)}"
+            body = f"{body}\n\n{_PULSE_QUESTION_PREFIX} {_pick_pulse_question(db, user.id)}"
         return ProactiveOpening(text=body, suggested_mood_checkin=True)
 
     mode = "support" if tone == "negative" else "assistant"
