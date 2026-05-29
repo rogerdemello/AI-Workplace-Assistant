@@ -472,3 +472,93 @@ def get_departments_heatmap(
     """Department × sentiment bucket counts for the HR dashboard heatmap."""
     rows = compute_department_heatmap(db)
     return {"departments": rows}
+
+
+@router.get("/pulse-summary")
+def get_pulse_summary(
+    days: int = Query(30, ge=1, le=180),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Aggregate pulse-question activity for HR.
+
+    Closes the loop: MARK asks a Pulse check on the first chat of the day, the
+    employee answers, sentiment is logged. This endpoint counts the questions
+    asked, finds the user reply that immediately followed each (within 60 min,
+    same conversation), and aggregates sentiment across those replies.
+    """
+    from collections import Counter
+    from datetime import timedelta as _td
+    from ...core.time import utcnow_naive
+    from ...models.conversation import Message, MessageSender
+    from ...models.sentiment_log import SentimentLog
+
+    cutoff = utcnow_naive() - _td(days=days)
+
+    # 1) Pulse questions asked in window (across all employees).
+    pulse_markers = (
+        db.query(Message.id, Message.conversation_id, Message.created_at)
+        .filter(Message.sender == MessageSender.bot)
+        .filter(Message.message_text.contains("Pulse check:"))
+        .filter(Message.created_at >= cutoff)
+        .all()
+    )
+    questions_asked = len(pulse_markers)
+
+    # 2) Reply message_ids: first user message in the same conversation within
+    #    60 minutes of each pulse question. One small query per marker — fine
+    #    at HR-pulse volume (tens/month).
+    reply_ids: list = []
+    for _mid, conv_id, asked_at in pulse_markers:
+        row = (
+            db.query(Message.id)
+            .filter(Message.conversation_id == conv_id)
+            .filter(Message.sender == MessageSender.user)
+            .filter(Message.created_at > asked_at)
+            .filter(Message.created_at <= asked_at + _td(minutes=60))
+            .order_by(Message.created_at.asc())
+            .first()
+        )
+        if row:
+            reply_ids.append(row[0])
+
+    replies_received = len(reply_ids)
+
+    # 3) Sentiment aggregate over those reply messages.
+    sentiment_rows = []
+    if reply_ids:
+        sentiment_rows = (
+            db.query(SentimentLog.label, SentimentLog.score, SentimentLog.emotion)
+            .filter(SentimentLog.message_id.in_(reply_ids))
+            .all()
+        )
+
+    pos = sum(1 for r in sentiment_rows if r.label == "positive")
+    neg = sum(1 for r in sentiment_rows if r.label == "negative")
+    neu = sum(1 for r in sentiment_rows if r.label == "neutral")
+    avg_score = (
+        int(sum(int(r.score or 0) for r in sentiment_rows) / len(sentiment_rows))
+        if sentiment_rows
+        else None
+    )
+    emotion_counts = Counter(
+        (r.emotion or "").strip()
+        for r in sentiment_rows
+        if r.emotion and r.emotion.strip() and r.emotion.strip() != "neutral"
+    )
+    top_emotion = emotion_counts.most_common(1)[0][0] if emotion_counts else None
+    response_rate = round(replies_received / questions_asked, 2) if questions_asked else 0.0
+
+    return {
+        "window_days": days,
+        "questions_asked": questions_asked,
+        "replies_received": replies_received,
+        "response_rate": response_rate,
+        "sentiment": {
+            "positive": pos,
+            "neutral": neu,
+            "negative": neg,
+            "average_score_0_100": avg_score,
+        },
+        "top_emotion": top_emotion,
+    }
