@@ -1012,6 +1012,36 @@ class SmartChatService:
             return "mild"
         return None
     
+    def _recent_messages_for_llm(self, limit: int = 8) -> List[Dict[str, str]]:
+        """Recent persisted turns in chronological order as LLM message dicts.
+
+        Without this MARK forgets what was just said — "yeah" after empathy reads
+        as a fresh greeting because only the current message reaches the model.
+        """
+        if not self.conversation_id:
+            return []
+        try:
+            from ..models.conversation import Message, MessageSender as _MS
+            from sqlalchemy import desc as _desc
+            rows = (
+                self.db.query(Message)
+                .filter(Message.conversation_id == self.conversation_id)
+                .order_by(_desc(Message.created_at))
+                .limit(max(1, int(limit)))
+                .all()
+            )
+            history: List[Dict[str, str]] = []
+            for m in reversed(rows):  # oldest first for the model
+                text = (m.message_text or "").strip()
+                if not text:
+                    continue
+                role = "user" if m.sender == _MS.user else "assistant"
+                history.append({"role": role, "content": text})
+            return history
+        except Exception as exc:
+            logger.warning(f"Failed to load conversation history for LLM: {exc}")
+            return []
+
     def _handle_general_query(self, message: str, sentiment: str, mode: str) -> str:
         """Handle general queries using AI."""
         try:
@@ -1019,23 +1049,25 @@ class SmartChatService:
             user_name = self.user_context.get("user_name")
             recent_sentiment = self.user_context.get("current_mood")
             department = self.user_context.get("department")
-            
+
             system_prompt = build_context_aware_prompt(
                 user_name=user_name,
                 recent_sentiment=recent_sentiment,
                 department_context=department,
                 mode=mode,
             )
-            
+
+            history = self._recent_messages_for_llm(limit=8)
             response = self.ai_client.chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message}
+                    *history,
+                    {"role": "user", "content": message},
                 ],
                 temperature=0.4,
                 max_tokens=140
             )
-            
+
             return response["choices"][0]["message"]["content"]
             
         except Exception as e:
@@ -1056,9 +1088,11 @@ class SmartChatService:
             department_context=department,
             mode=mode,
         )
+        history = self._recent_messages_for_llm(limit=8)
         return self.ai_client.chat_completion_stream(
             messages=[
                 {"role": "system", "content": system_prompt},
+                *history,
                 {"role": "user", "content": message},
             ],
             temperature=0.4,
