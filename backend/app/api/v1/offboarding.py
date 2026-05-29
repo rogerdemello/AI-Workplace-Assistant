@@ -10,12 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user, require_roles
-from ..database import get_db
-from ..core.time import utcnow_naive
-from ..models.offboarding_task import OffboardingTask, TASK_KINDS
-from ..models.user import User
-from ..services.offboarding import (
+from ...auth import get_current_user, require_roles
+from ...database import get_db
+from ...core.time import utcnow_naive
+from ...models.offboarding_task import OffboardingTask, TASK_KINDS
+from ...models.user import User
+from ...services.offboarding import (
     list_tasks_for_user,
     seed_canonical_offboarding_tasks,
 )
