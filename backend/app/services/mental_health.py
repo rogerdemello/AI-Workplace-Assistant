@@ -182,6 +182,13 @@ def create_risk_alert(
     )
     db.add(alert)
     db.flush()
+
+    # Best-effort Teams fan-out — no-op when Teams isn't configured.
+    try:
+        from .teams_service import notify_hr_alert as _teams_notify
+        _teams_notify(title=title, body=body, severity=severity)
+    except Exception:
+        pass
     
     # Record automation action for idempotency
     action = AutomationAction(

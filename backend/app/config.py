@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     # When true, validates X-Twilio-Signature on inbound /whatsapp/webhook hits.
     # Set false for local ngrok testing where URL rewriting breaks the HMAC.
     WHATSAPP_VALIDATE_SIGNATURE: bool = True
+
+    # Microsoft Teams — Incoming Webhook for HR fan-out (alerts, patterns, etc.).
+    # Create a webhook on the target channel ("Connectors" → "Incoming Webhook"),
+    # paste the URL here, flip the flag, and posts go to that channel. Empty =
+    # no-op (every Teams call returns False cleanly, the alert path is untouched).
+    ENABLE_TEAMS_NOTIFICATIONS: bool = False
+    TEAMS_WEBHOOK_URL: str = ""
+    # Used in the "Open in MARK" deep link on the cards; falls back to no link
+    # when empty.
+    TEAMS_DASHBOARD_URL: str = ""
+
     LIFE_WEATHER_BASE_URL: str = "https://api.open-meteo.com/v1/forecast"
     LIFE_GEOCODE_BASE_URL: str = "https://geocoding-api.open-meteo.com/v1/search"
     LIFE_PLACES_API_URL: str = ""
