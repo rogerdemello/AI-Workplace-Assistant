@@ -474,6 +474,24 @@ def get_departments_heatmap(
     return {"departments": rows}
 
 
+@router.get("/patterns")
+def get_patterns(
+    days: int = Query(14, ge=3, le=90),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Cross-employee patterns + concrete HR recommendations.
+
+    Surfaces things you can't see from a single profile — recurring negative
+    emotions across multiple employees, department sentiment drops vs the prior
+    window, repeating complaint categories, and top at-risk individuals — each
+    paired with an actionable next step.
+    """
+    from ...services.pattern_detection import detect_patterns
+
+    return {"window_days": days, "patterns": detect_patterns(db, days=days)}
+
+
 @router.get("/pulse-summary")
 def get_pulse_summary(
     days: int = Query(30, ge=1, le=180),

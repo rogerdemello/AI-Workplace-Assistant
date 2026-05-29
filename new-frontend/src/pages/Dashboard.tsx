@@ -5,6 +5,7 @@ import { AlertsPanelCard } from "@/components/dashboard/AlertsPanelCard";
 import { AtRiskEmployeesCard } from "@/components/dashboard/AtRiskEmployeesCard";
 import { DepartmentHeatmapCard } from "@/components/dashboard/DepartmentHeatmapCard";
 import { KpiStatsRow } from "@/components/dashboard/KpiStatsRow";
+import { PatternsCard } from "@/components/dashboard/PatternsCard";
 import { PulseSummaryCard } from "@/components/dashboard/PulseSummaryCard";
 import { SentimentTrendsCard } from "@/components/dashboard/SentimentTrendsCard";
 import { getDashboardData, getRecentActivity } from "@/lib/services";
@@ -321,7 +322,10 @@ export default function Dashboard() {
           <AlertsPanelCard limit={30} />
         </div>
 
-        <PulseSummaryCard days={30} />
+        <div className="grid lg:grid-cols-2 gap-4">
+          <PatternsCard days={14} />
+          <PulseSummaryCard days={30} />
+        </div>
 
         <EmotionMixTrendCard
           points={data?.emotions ?? []}
