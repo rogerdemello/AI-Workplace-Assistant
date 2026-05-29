@@ -17,6 +17,9 @@ from ...models.survey import Survey, SurveyResponse
 from ...models.ticket import Ticket
 from ...models.user import User, UserRole, UserStatus
 from ...models.leave_request import LeaveRequest, LeaveStatus as LeaveRowStatus
+from ...models.sentiment_log import SentimentLog
+from ...models.mood_entry import MoodEntry
+from ...models.conversation import Message
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -289,6 +292,56 @@ def get_user_timeline(
                 date=lv.created_at.date().isoformat() if lv.created_at else "",
                 text=f"Leave ({st}): {lv.start_date} → {lv.end_date} ({lt_label})",
                 tone=tone,
+            )
+        )
+
+    # Chat-derived sentiment signals — surface emotional tone from MARK
+    # conversations so HR sees how the employee is actually feeling, not just
+    # tickets/leaves. Skip neutral; cap the snippet to keep timeline readable.
+    sentiment_rows = (
+        db.query(SentimentLog, Message.message_text)
+        .outerjoin(Message, Message.id == SentimentLog.message_id)
+        .filter(SentimentLog.employee_id == user_id)
+        .filter(SentimentLog.label.in_(("positive", "negative")))
+        .order_by(SentimentLog.created_at.desc())
+        .limit(8)
+        .all()
+    )
+    for sl, msg_text in sentiment_rows:
+        emotion = (sl.emotion or "").strip() or sl.label
+        snippet = (msg_text or "").strip().replace("\n", " ")
+        if len(snippet) > 60:
+            snippet = snippet[:60].rstrip() + "…"
+        text = f"Chat: {emotion}" + (f" — “{snippet}”" if snippet else "")
+        items.append(
+            TimelineItem(
+                date=sl.created_at.date().isoformat() if sl.created_at else "",
+                text=text,
+                tone="positive" if sl.label == "positive" else "danger",
+            )
+        )
+
+    # Mood check-ins (employee's own daily self-report)
+    for me in (
+        db.query(MoodEntry)
+        .filter(MoodEntry.user_id == user_id)
+        .order_by(MoodEntry.created_at.desc())
+        .limit(5)
+        .all()
+    ):
+        emoji = me.mood_emoji.value if hasattr(me.mood_emoji, "value") else str(me.mood_emoji)
+        score = int(me.mood_score or 0)
+        if score >= 70:
+            mtone = "positive"
+        elif score <= 35:
+            mtone = "danger"
+        else:
+            mtone = "neutral"
+        items.append(
+            TimelineItem(
+                date=me.created_at.date().isoformat() if me.created_at else "",
+                text=f"Mood check-in: {emoji} ({score}/100)",
+                tone=mtone,
             )
         )
 
