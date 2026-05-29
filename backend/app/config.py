@@ -33,7 +33,10 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_USE_TLS: bool = True
     ENABLE_WHATSAPP_CHANNEL: bool = False
-    ENABLE_LIFE_ASSISTANT: bool = False
+    # On by default — the agent only intercepts explicit weather / restaurant /
+    # cafeteria keywords and falls back cleanly when no provider key is set
+    # (weather works out of the box via open-meteo, no key required).
+    ENABLE_LIFE_ASSISTANT: bool = True
     ENABLE_PRODUCTIVITY_AGENT: bool = False
     ENABLE_MULTI_AGENT_ORCHESTRATION: bool = False
     WHATSAPP_VERIFY_TOKEN: str = ""
