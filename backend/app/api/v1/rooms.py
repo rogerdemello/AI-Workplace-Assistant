@@ -135,7 +135,8 @@ def list_rooms(
     capacity: Optional[int] = Query(None, description="Filter by minimum capacity"),
     facilities: Optional[str] = Query(None, description="Comma-separated list of required facilities"),
     include_inactive: bool = Query(False, description="Include inactive rooms"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """List all rooms with optional filters."""
     query = db.query(Room)
@@ -156,7 +157,11 @@ def list_rooms(
 
 
 @router.get("/{room_id}", response_model=RoomResponse)
-def get_room(room_id: UUID, db: Session = Depends(get_db)):
+def get_room(
+    room_id: UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
     """Get a specific room by ID."""
     room = db.query(Room).filter(Room.id == room_id).first()
     if not room:
@@ -204,7 +209,8 @@ def delete_room(room_id: UUID, db: Session = Depends(get_db)):
 def check_availability(
     room_id: UUID,
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
 ):
     """Check room availability for a specific date."""
     room = db.query(Room).filter(Room.id == room_id).first()
