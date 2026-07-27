@@ -17,6 +17,20 @@ from ...models.survey import Survey, SurveyResponse
 from ...models.ticket import Ticket
 from ...models.user import User, UserRole, UserStatus
 from ...models.leave_request import LeaveRequest, LeaveStatus as LeaveRowStatus
+from ...models.sentiment_log import SentimentLog
+from ...models.mood_entry import MoodEntry
+from ...models.conversation import Message, MessageSender, Conversation
+from datetime import datetime as _dt, timedelta as _td
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Single-word acks / fillers carry sentiment but no signal — keep them off
+# the HR timeline so it reads as meaningful events, not noise.
+_TRIVIAL_REPLIES = {
+    "yeah", "yes", "yep", "y", "no", "nope", "n", "ok", "okay", "k",
+    "sure", "thx", "thanks", "ty", "cool", "nice", "lol", "haha", "hmm",
+}
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -156,6 +170,12 @@ def admin_update_user(
     if not u:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    # Capture pre-update values so we can fire lifecycle check-ins on real
+    # changes — manager re-assignment / role move are exactly the moments
+    # Infeedo-style listening cares about.
+    old_manager_id = u.manager_id
+    old_designation = u.designation
+
     if payload.name is not None and payload.name.strip():
         u.name = payload.name.strip()
     if payload.email is not None and payload.email.strip():
@@ -180,6 +200,26 @@ def admin_update_user(
     db.add(u)
     db.commit()
     db.refresh(u)
+
+    # Best-effort lifecycle check-ins — failures must not break the PATCH.
+    try:
+        from ...services.lifecycle_surveys import enqueue_lifecycle_check_in
+        if u.manager_id != old_manager_id and u.manager_id is not None:
+            enqueue_lifecycle_check_in(
+                db,
+                user_id=u.id,
+                kind="manager_change",
+                message_text="Heads up — your reporting line just changed. How's it been working with your new manager so far?",
+            )
+        if (u.designation or "") != (old_designation or "") and u.designation:
+            enqueue_lifecycle_check_in(
+                db,
+                user_id=u.id,
+                kind="role_change",
+                message_text=f"You've moved into '{u.designation}'. How's the new role feeling so far?",
+            )
+    except Exception:
+        logger.warning("Lifecycle check-in enqueue failed", exc_info=True)
 
     dept = _dept_map(db)
     dname = dept.get(str(u.department_id), "General") if u.department_id else "General"
@@ -234,22 +274,26 @@ def get_user_timeline(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
 
     limit = max(1, min(limit, 40))
-    items: List[TimelineItem] = []
+    # (timestamp, TimelineItem) so same-day events sort correctly by time, not
+    # by insertion order or stringly-typed date.
+    sortable: List[tuple[_dt, TimelineItem]] = []
 
+    def _iso(d: _dt | None) -> str:
+        return d.date().isoformat() if d else ""
+
+    # Tickets — hide anonymous ones from the user's own timeline (the whole
+    # point of an anonymous report is that it isn't attributable here).
     for t in (
         db.query(Ticket)
-        .filter(Ticket.user_id == user_id)
+        .filter(Ticket.user_id == user_id, Ticket.is_anonymous.is_(False))
         .order_by(Ticket.created_at.desc())
         .limit(8)
         .all()
     ):
-        items.append(
-            TimelineItem(
-                date=t.created_at.date().isoformat() if t.created_at else "",
-                text=f"Ticket: {(t.query or '')[:80]}",
-                tone="neutral",
-            )
-        )
+        sortable.append((
+            t.created_at or _dt.min,
+            TimelineItem(date=_iso(t.created_at), text=f"Ticket: {(t.query or '')[:80]}", tone="neutral"),
+        ))
 
     for r in (
         db.query(SurveyResponse)
@@ -260,13 +304,10 @@ def get_user_timeline(
     ):
         surv = db.query(Survey).filter(Survey.id == r.survey_id).first()
         title = surv.title if surv else "Survey"
-        items.append(
-            TimelineItem(
-                date=r.created_at.date().isoformat() if r.created_at else "",
-                text=f"Survey response: {title}",
-                tone="positive",
-            )
-        )
+        sortable.append((
+            r.created_at or _dt.min,
+            TimelineItem(date=_iso(r.created_at), text=f"Survey response: {title}", tone="positive"),
+        ))
 
     for lv in (
         db.query(LeaveRequest)
@@ -284,16 +325,125 @@ def get_user_timeline(
             tone = "danger"
         else:
             tone = "neutral"
-        items.append(
+        sortable.append((
+            lv.created_at or _dt.min,
             TimelineItem(
-                date=lv.created_at.date().isoformat() if lv.created_at else "",
+                date=_iso(lv.created_at),
                 text=f"Leave ({st}): {lv.start_date} → {lv.end_date} ({lt_label})",
                 tone=tone,
-            )
-        )
+            ),
+        ))
 
-    items.sort(key=lambda x: x.date, reverse=True)
-    return items[:limit]
+    # Chat-derived sentiment signals.
+    # Pull more than 8 so we can drop dupes / "yeah" noise without coming up empty.
+    sentiment_rows = (
+        db.query(
+            SentimentLog,
+            Message.message_text,
+            Message.conversation_id,
+            Message.created_at.label("msg_at"),
+        )
+        .outerjoin(Message, Message.id == SentimentLog.message_id)
+        .filter(SentimentLog.employee_id == user_id)
+        .filter(SentimentLog.label.in_(("positive", "negative")))
+        .order_by(SentimentLog.created_at.desc())
+        .limit(24)
+        .all()
+    )
+
+    # One query to find recent "Pulse check:" bot messages — used in Python to
+    # tag sentiment items that follow a pulse question within ~60 minutes.
+    pulse_cutoff = _dt.utcnow() - _td(days=30)
+    pulse_by_conv: dict[str, List[_dt]] = {}
+    for cid, cat in (
+        db.query(Message.conversation_id, Message.created_at)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .filter(Conversation.user_id == user_id)
+        .filter(Message.sender == MessageSender.bot)
+        .filter(Message.message_text.contains("Pulse check:"))
+        .filter(Message.created_at >= pulse_cutoff)
+        .all()
+    ):
+        pulse_by_conv.setdefault(str(cid), []).append(cat)
+
+    seen_msg_ids: set[str] = set()
+    seen_norm_texts: set[str] = set()
+    sentiment_added = 0
+    for sl, msg_text, msg_conv_id, msg_at in sentiment_rows:
+        if sentiment_added >= 8:
+            break
+        text_raw = (msg_text or "").strip()
+        if not text_raw:
+            continue
+        norm = text_raw.lower().rstrip("!.?").strip()
+        # Strip stray apostrophes/spaces so "what's a..." and "whats a..." collapse.
+        norm_key = "".join(ch for ch in norm if ch.isalnum() or ch == " ").strip()
+        norm_key = " ".join(norm_key.split())
+        if norm in _TRIVIAL_REPLIES or len(norm) < 4:
+            continue
+        mkey = str(sl.message_id)
+        if mkey in seen_msg_ids or norm_key in seen_norm_texts:
+            continue
+        seen_msg_ids.add(mkey)
+        if norm_key:
+            seen_norm_texts.add(norm_key)
+
+        is_pulse_reply = False
+        if msg_conv_id and msg_at:
+            for pulse_at in pulse_by_conv.get(str(msg_conv_id), []):
+                if pulse_at and pulse_at < msg_at and (msg_at - pulse_at).total_seconds() <= 3600:
+                    is_pulse_reply = True
+                    break
+
+        emotion_raw = (sl.emotion or "").strip()
+        if emotion_raw and emotion_raw != "neutral":
+            descriptor = emotion_raw
+        else:
+            descriptor = "upbeat" if sl.label == "positive" else "down"
+
+        snippet = text_raw.replace("\n", " ")
+        if len(snippet) > 60:
+            snippet = snippet[:60].rstrip() + "…"
+
+        prefix = "Pulse reply" if is_pulse_reply else "Chat"
+        sortable.append((
+            sl.created_at or _dt.min,
+            TimelineItem(
+                date=_iso(sl.created_at),
+                text=f"{prefix}: {descriptor} — “{snippet}”",
+                tone="positive" if sl.label == "positive" else "danger",
+            ),
+        ))
+        sentiment_added += 1
+
+    # Mood check-ins (employee's own daily self-report). Skip bogus scores so
+    # stale demo rows like "🙂 (4/100)" don't surface as danger.
+    for me in (
+        db.query(MoodEntry)
+        .filter(MoodEntry.user_id == user_id)
+        .order_by(MoodEntry.created_at.desc())
+        .limit(5)
+        .all()
+    ):
+        score = int(me.mood_score or 0)
+        # Drop obviously-malformed scores (0, negative, >100, or on a 1–5 scale
+        # rather than 0–100 — frontend mood chips use 80/55/35/15).
+        if score < 10 or score > 100:
+            continue
+        emoji = me.mood_emoji.value if hasattr(me.mood_emoji, "value") else str(me.mood_emoji)
+        if score >= 70:
+            mtone = "positive"
+        elif score <= 35:
+            mtone = "danger"
+        else:
+            mtone = "neutral"
+        sortable.append((
+            me.created_at or _dt.min,
+            TimelineItem(date=_iso(me.created_at), text=f"Mood check-in: {emoji} ({score}/100)", tone=mtone),
+        ))
+
+    sortable.sort(key=lambda kv: kv[0], reverse=True)
+    return [item for _ts, item in sortable[:limit]]
 
 
 @router.get("/{user_id}", response_model=UserDetailResponse)

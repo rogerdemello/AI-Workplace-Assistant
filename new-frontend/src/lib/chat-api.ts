@@ -158,6 +158,51 @@ export async function ensureSessionToken(session: AuthSession | null): Promise<s
   return getTokenForSession(session);
 }
 
+export interface PendingNudge {
+  id: string;
+  text: string;
+  nudgeType: string;
+  createdAt: string;
+}
+
+/**
+ * Proactive check-ins sent while this client had no chat open.
+ *
+ * SSE only reaches an already-open tab, and the transcript is restored from
+ * local storage rather than the server, so without this a nudge sent to an
+ * away employee is never seen.
+ */
+export async function fetchPendingNudges(
+  session: AuthSession | null,
+  since: string | null,
+): Promise<PendingNudge[]> {
+  const token = await getTokenForSession(session);
+  if (!token) {
+    return [];
+  }
+  const query = since ? `?since=${encodeURIComponent(since)}` : "";
+  try {
+    const res = await fetch(`${apiBaseUrl()}/api/v1/chat/nudges/pending${query}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      return [];
+    }
+    const rows = (await res.json()) as Array<Record<string, unknown>>;
+    if (!Array.isArray(rows)) {
+      return [];
+    }
+    return rows.map((row) => ({
+      id: String(row.id ?? ""),
+      text: String(row.text ?? ""),
+      nudgeType: String(row.nudge_type ?? ""),
+      createdAt: String(row.created_at ?? ""),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /** Best-effort close of a server conversation when the user starts a new chat. */
 export async function closeConversation(conversationId: string, session: AuthSession | null): Promise<boolean> {
   const id = conversationId?.trim();

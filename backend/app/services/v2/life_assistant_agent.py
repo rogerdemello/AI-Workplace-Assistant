@@ -49,7 +49,7 @@ class LifeAssistantAgent:
                 handled=True,
                 reply=f"{city}: 32°C, mixed conditions. {fallback_advice}",
             )
-        if re.search(r"\b(restaurant|eat|food near|nearby food|where can i eat)\b", text):
+        if re.search(r"\b(restaurants?|food\s+near|nearby\s+(?:food|restaurants?)|where\s+can\s+i\s+eat|places\s+to\s+eat|good\s+lunch\s+spots?|lunch\s+spots?)\b", text):
             preference = self._resolve_food_preference(text)
             suggestions = asyncio.run(self.data_service.nearby_restaurants(query=text, preference=preference))
             if suggestions:

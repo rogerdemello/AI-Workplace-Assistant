@@ -15,7 +15,10 @@ def get_redis_client() -> Optional[redis.Redis]:
     global _redis_client
     if _redis_client is None:
         try:
-            _redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+            _redis_client = redis.from_url(
+                os.getenv("REDIS_URL", "redis://localhost:6379"),
+                socket_connect_timeout=0.3, socket_timeout=0.3,
+            )
             _redis_client.ping()  # type: ignore[attr-defined]
         except Exception:
             _redis_client = None

@@ -4,8 +4,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import Any, List, Optional
 from uuid import UUID
+from datetime import datetime, timedelta
 import json
+import time
 
+from ...core import metrics
+from ...core.time import utcnow_naive
 from ...database import get_db
 from ...core.feature_flags import get_feature_flags
 from ...events import event_bus
@@ -73,6 +77,8 @@ def _run_sentiment_pipeline_for_user_message(
     """Updates sentiment_logs + employee_score so HR dashboards reflect chat tone."""
     if user_message is None:
         return
+
+    started = time.monotonic()
     try:
         SentimentPipelineService(db).process_message(
             employee_id=employee_id,
@@ -83,12 +89,26 @@ def _run_sentiment_pipeline_for_user_message(
             intelligence_snapshot=intelligence_snapshot,
             conversation_id=conversation_id,
         )
-    except Exception:
-        logger.warning("Sentiment pipeline update skipped", exc_info=True)
+        metrics.increment("sentiment_pipeline_processed_total")
+    except Exception as exc:
+        # This failing means an employee's signal never reaches the HR dashboard,
+        # so it needs to be countable and greppable, not just a stack trace.
+        metrics.increment(
+            "sentiment_pipeline_failures_total", {"error": type(exc).__name__}
+        )
+        logger.warning(
+            "event=sentiment_pipeline_failed employee_id=%s message_id=%s error=%s",
+            employee_id,
+            user_message.id,
+            type(exc).__name__,
+            exc_info=True,
+        )
         try:
             db.rollback()
         except Exception:
             pass
+    finally:
+        metrics.observe_latency("sentiment_pipeline_seconds", time.monotonic() - started)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -196,18 +216,14 @@ def unified_chat_message(
         logger.warning("Failed to persist messages", exc_info=True)
         user_message = None
 
-    # ── Sentiment pipeline → sentiment_logs + employee_scores (HR dashboard) ──
-    if _should_persist_sentiment_pipeline(intel):
-        _run_sentiment_pipeline_for_user_message(
-            db,
-            employee_id=current_user.id,
-            user_message=user_message,
-            message_text=request.message,
-            sentiment_label=str(sentiment_label),
-            sentiment_score=float(sentiment_score or 0.0),
-            intelligence_snapshot=intel,
-            conversation_id=conversation_id,
-        )
+    # Sentiment pipeline (sentiment_logs + employee_scores for HR dashboards) is
+    # HR-facing only; it's deferred off the chat reply path below rather than run
+    # synchronously. user_message is already committed, so its id is stable.
+    pipeline_message_id = (
+        user_message.id
+        if (user_message is not None and _should_persist_sentiment_pipeline(intel))
+        else None
+    )
 
     try:
         event_bus.publish(
@@ -244,8 +260,20 @@ def unified_chat_message(
             sentiment_score=sentiment_score,
             intent=intent_guess,
             sentiment_label=str(sentiment_label),
+            pipeline_message_id=pipeline_message_id,
         )
     else:
+        if pipeline_message_id is not None:
+            _run_sentiment_pipeline_for_user_message(
+                db,
+                employee_id=current_user.id,
+                user_message=user_message,
+                message_text=request.message,
+                sentiment_label=str(sentiment_label),
+                sentiment_score=float(sentiment_score or 0.0),
+                intelligence_snapshot=intel,
+                conversation_id=conversation_id,
+            )
         if get_feature_flags().enable_proactive:
             try:
                 get_mark_proactive_service(db=db).capture_chat_signal(
@@ -390,12 +418,56 @@ def _defer_chat_nonblocking_side_effects(
     sentiment_score: float,
     intent: str,
     sentiment_label: str,
+    pipeline_message_id: Optional[UUID] = None,
 ) -> None:
     """Runs after HTTP response — own DB session; must not touch request-scoped `db`."""
     from ...database import SessionLocal
 
     db = SessionLocal()
     try:
+        # Sentiment pipeline (sentiment_logs + employee_scores for HR dashboards)
+        # writes to remote Postgres and recomputes aggregates — kept off the chat
+        # reply path. The user_message was already committed by the request.
+        if pipeline_message_id is not None:
+            started = time.monotonic()
+            try:
+                SentimentPipelineService(db).process_message(
+                    employee_id=employee_id,
+                    message_id=pipeline_message_id,
+                    message_text=message_text,
+                    sentiment_label=sentiment_label,
+                    sentiment_score=float(sentiment_score or 0.0),
+                    conversation_id=conversation_id,
+                )
+                metrics.increment(
+                    "sentiment_pipeline_processed_total", {"path": "deferred"}
+                )
+            except Exception as exc:
+                # Same instrumentation as the synchronous path — this is the
+                # default in production (CHAT_DEFER_NONBLOCKING_SIDE_EFFECTS),
+                # so leaving it uncounted would blind the metric that matters.
+                metrics.increment(
+                    "sentiment_pipeline_failures_total",
+                    {"error": type(exc).__name__, "path": "deferred"},
+                )
+                logger.warning(
+                    "event=sentiment_pipeline_failed path=deferred employee_id=%s "
+                    "message_id=%s error=%s",
+                    employee_id,
+                    pipeline_message_id,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            finally:
+                metrics.observe_latency(
+                    "sentiment_pipeline_seconds",
+                    time.monotonic() - started,
+                    {"path": "deferred"},
+                )
         if get_feature_flags().enable_proactive:
             try:
                 get_mark_proactive_service(db=db).capture_chat_signal(
@@ -900,3 +972,57 @@ def get_memory_cards(
     db: Session = Depends(get_db),
 ):
     return _memory_cards_for_user(db=db, user_id=current_user.id, limit=limit)
+
+
+class PendingNudgeResponse(BaseModel):
+    id: UUID
+    text: str
+    nudge_type: str
+    created_at: datetime
+
+
+@router.get("/nudges/pending", response_model=List[PendingNudgeResponse])
+def get_pending_nudges(
+    since: Optional[datetime] = Query(
+        default=None,
+        description="Only return nudges sent after this timestamp (client watermark).",
+    ),
+    limit: int = Query(default=10, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Proactive messages the user missed while they had no chat open.
+
+    The employee chat restores its transcript from local storage, so a nudge
+    delivered over SSE reaches only an already-open tab. Quiet employees — the
+    ones these check-ins exist for — are precisely the people without one. This
+    lets the client pull anything sent since its own watermark on next open.
+    """
+    from ...services.mark_proactive import NUDGE_INTENT_PREFIX
+
+    # Default window keeps a returning user from being buried in old nudges.
+    cutoff = since or (utcnow_naive() - timedelta(days=7))
+
+    rows = (
+        db.query(ConversationMessage)
+        .join(Conversation, ConversationMessage.conversation_id == Conversation.id)
+        .filter(
+            Conversation.user_id == current_user.id,
+            ConversationMessage.sender == ConversationMessageSender.bot,
+            ConversationMessage.intent.like(f"{NUDGE_INTENT_PREFIX}%"),
+            ConversationMessage.created_at > cutoff,
+        )
+        .order_by(ConversationMessage.created_at.asc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        PendingNudgeResponse(
+            id=row.id,
+            text=row.message_text,
+            nudge_type=(row.intent or "").removeprefix(NUDGE_INTENT_PREFIX),
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]

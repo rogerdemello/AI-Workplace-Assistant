@@ -370,6 +370,10 @@ def list_my_direct_reports(
             db.query(func.count(Ticket.id))
             .filter(
                 Ticket.user_id == u.id,
+                # Anonymous tickets must never be attributed to a named report.
+                # A count of 1 against one person identifies the author to the
+                # very manager the ticket may be about.
+                Ticket.is_anonymous.is_(False),
                 Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress, TicketStatus.escalated]),
             )
             .scalar()
@@ -447,6 +451,9 @@ def get_manager_summary(
         db.query(func.count(Ticket.id))
         .filter(
             Ticket.user_id.in_(report_ids),
+            # See list_my_direct_reports: on a small team an anonymous ticket in
+            # this count is effectively attributable, so it stays out.
+            Ticket.is_anonymous.is_(False),
             Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress, TicketStatus.escalated]),
         )
         .scalar()

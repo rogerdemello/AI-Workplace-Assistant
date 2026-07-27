@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime
 
 from ..ai_client import get_ai_client, AzureOpenAIClient, MockAzureOpenAIClient
+from ..config import settings
 from ..core.time import utcnow_naive
 from .hr_personality import FRIENDLY_SYSTEM_PROMPT, EMOTIONALLY_AWARE_PROMPT
 
@@ -140,6 +141,55 @@ INTENTS = {
             "Leave days remaining",
         ],
     },
+    "appointment_request": {
+        "description": "User wants to book a meeting or 1:1 with HR",
+        "examples": [
+            "Can I book a 1:1 with HR?",
+            "I'd like to schedule a meeting with HR",
+            "Can we set up a call this week?",
+            "I want to talk to someone in HR privately",
+            "Book me an appointment with HR",
+        ],
+    },
+    "expense_claim": {
+        "description": "User wants to claim a reimbursement for money they spent",
+        "examples": [
+            "I want to claim my travel expenses",
+            "How do I file a reimbursement?",
+            "Submit an expense claim for my laptop",
+            "I paid for the team dinner, can I get it back?",
+            "Raise a reimbursement request",
+        ],
+    },
+    "shift_change_request": {
+        "description": "User wants to work from home on a working day or swap/change a shift",
+        "examples": [
+            "Can I work from home on Friday?",
+            "I need to swap my shift with someone",
+            "Requesting a shift change next week",
+            "Can I switch to the morning shift?",
+            "I'd like to work remotely for a few days",
+        ],
+    },
+    "document_request": {
+        "description": "User needs an HR document such as a payslip, letter or tax form",
+        "examples": [
+            "I need my payslip for last month",
+            "Can I get an employment letter?",
+            "Please send my Form 16",
+            "I need a salary certificate for a loan",
+            "Request an experience letter",
+        ],
+    },
+    "appreciation": {
+        "description": "User wants to send appreciation / kudos / a shout-out to a colleague",
+        "examples": [
+            "Thanks to Priya for closing the bug",
+            "Shoutout to Arjun — saved my release",
+            "Kudos to Ananya for the deck",
+            "Big credit to John for picking up the on-call",
+        ],
+    },
 }
 
 INTENT_LIST = list(INTENTS.keys())
@@ -162,11 +212,25 @@ def _build_fast_routes() -> List[Tuple[re.Pattern, str, float, str]]:
         (r"\b(what\s+(is|are)\s+(the\s+)?policy|handbook|company\s+rules?|remote\s+work\s+policy|wfh\s+policy|dress\s+code|overtime\s+policy|expense\s+policy|pto\s+(policy|rules?)|working\s+hours)\b", "policy_query", 0.90, "Fast-path: explicit policy query"),
         # Benefits
         (r"\b(health\s+insurance|dental\s+coverage|vision\s+insurance|401k|retirement\s+plan|stock\s+options|gym\s+membership|parental\s+leave|employee\s+benefits|what\s+benefits)\b", "benefits_question", 0.90, "Fast-path: benefits keyword"),
+        # Appointment with HR. Deliberately narrow: the productivity agent owns
+        # generic "book a meeting room" / "schedule a meeting with <person>", so
+        # this only claims the word "appointment" or an explicit HR counterpart.
+        (r"\b((book|schedule|set\s+up|make)\s+(an?\s+)?appointment|appointment\s+with\s+hr|(1:1|one[-\s]?on[-\s]?one|meeting|catch[-\s]?up)\s+with\s+hr|meet\s+with\s+hr|speak\s+to\s+someone\s+in\s+hr|book\s+(a\s+)?slot\s+with\s+hr)\b", "appointment_request", 0.91, "Fast-path: booking time with HR"),
+        # Expense / reimbursement — "expense policy" is caught by the policy route above
+        (r"\b(reimbursement|reimburse\s+me|expense\s+claim|claim\s+(my\s+)?expenses?|file\s+(an?\s+)?expense|submit\s+(an?\s+)?expense|claim\s+(it\s+)?back|out\s+of\s+pocket)\b", "expense_claim", 0.91, "Fast-path: reimbursement claim"),
+        # WFH / shift change — after the leave route so "apply for leave" stays a leave request
+        (r"\b(work\s+from\s+home\s+(on|next|this|tomorrow|for)|wfh\s+(on|next|this|tomorrow|for)|work\s+remotely|shift\s+change|change\s+my\s+shift|swap\s+(my\s+)?shift|switch\s+(my\s+)?shift|change\s+my\s+working\s+hours)\b", "shift_change_request", 0.90, "Fast-path: remote-work or shift change request"),
+        # HR documents
+        (r"\b(payslip|pay\s+slip|salary\s+slip|form\s+16|employment\s+letter|experience\s+letter|relieving\s+letter|salary\s+certificate|offer\s+letter\s+copy|employment\s+verification)\b", "document_request", 0.91, "Fast-path: HR document request"),
         # Email draft
         (r"\b(draft\s+(an?\s+)?email|write\s+(an?\s+)?email|help\s+me\s+compose|email\s+to\s+my|resignation\s+letter|follow[-\s]?up\s+email)\b", "email_draft", 0.91, "Fast-path: email drafting request"),
         # Emotional / distress
         (r"\b(i\s+feel\s+(stressed|anxious|depressed|overwhelmed|burned?\s+out|exhausted|hopeless|sad|empty)|i\s+can\'?t\s+cope|mental\s+health|i\s+need\s+therapy|panic\s+attack|want\s+to\s+quit|had\s+enough|not\s+okay|not\s+ok)\b", "emotional", 0.93, "Fast-path: emotional distress signal"),
         # Reminder — NOTE: not fast-pathed; _apply_intent_keyword_fallback handles it after LLM classify
+        # Appreciation — MUST come before the bare "thanks" route below so
+        # "thanks to <name>" doesn't get swallowed as a plain general "thanks".
+        (r"\b(thanks?\s+to\s+[A-Za-z]|thank\s+you\s+to\s+[A-Za-z]|appreciat\w+\s+(?:goes\s+)?to\s+[A-Za-z]|appreciation\s+for\s+[A-Za-z]|shout[-\s]?out\s+to\s+[A-Za-z]|kudos\s+to\s+[A-Za-z]|credit\s+(?:goes\s+)?to\s+[A-Za-z]|hat\s+tip\s+to\s+[A-Za-z])", "appreciation", 0.92, "Fast-path: appreciation toward a person"),
+        (r"\b[A-Z][a-zA-Z]{1,30}(?:\s+[A-Z][a-zA-Z]{1,30})?\s+(?:really\s+|absolutely\s+)?(?:helped|saved|covered|carried|crushed\s+it)\b", "appreciation", 0.85, "Fast-path: <Name> helped/saved me pattern"),
         # Greeting / thanks
         (r"^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening)|what\s+can\s+you\s+do|who\s+are\s+you)([\s,]|$|\!|\?|\.)", "general_query", 0.88, "Fast-path: greeting or intro"),
         (r"^(thanks?|thank\s+you|thx|ty)(\s|$|\!|\.|\?)", "general_query", 0.88, "Fast-path: thanks"),
@@ -243,15 +307,35 @@ class IntentClassifier:
                 if cached:
                     classification_result = cached
                     path = "cache"
+                elif settings.FAST_CHAT_MODE:
+                    # Latency mode: skip the LLM classify fallback (a full extra
+                    # gpt-4o round-trip per turn). Explicit intents are caught by
+                    # the regex routes above; everything else is general chat —
+                    # the general handler still replies, and mid-flow this reads
+                    # as "continue the current flow".
+                    classification_result = {
+                        "intent": "general_query",
+                        "confidence": 0.4,
+                        "reasoning": "fast-mode default (LLM classify skipped)",
+                    }
+                    path = "fast-default"
                 else:
                     # 3. LLM fallback
                     classification_result = self._llm_classify(message)
                     path = "llm"
                     set_cached(cache_key, classification_result, ttl=60)
             except Exception:
-                # Cache unavailable — fall through to LLM
-                classification_result = self._llm_classify(message)
-                path = "llm"
+                # Cache unavailable — fall through to LLM (unless fast mode)
+                if settings.FAST_CHAT_MODE:
+                    classification_result = {
+                        "intent": "general_query",
+                        "confidence": 0.4,
+                        "reasoning": "fast-mode default (LLM classify skipped)",
+                    }
+                    path = "fast-default"
+                else:
+                    classification_result = self._llm_classify(message)
+                    path = "llm"
 
         duration_ms = round((time.perf_counter() - start_ts) * 1000, 2)
         logger.info(

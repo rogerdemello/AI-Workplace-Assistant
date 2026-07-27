@@ -36,6 +36,54 @@ _MEMORY_SENSITIVE_TAGS = {
     "conflict", "resignation", "grievance",
 }
 
+# MARK occasionally asks a life/work pulse question on the first chat of the
+# day. Answers flow through the normal chat pipeline, so the sentiment lands in
+# sentiment_logs / employee_scores → HR sees them on the dashboard + timeline.
+_PULSE_QUESTION_PREFIX = "Pulse check:"
+_PULSE_COOLDOWN_DAYS = 5
+_PULSE_QUESTIONS = [
+    "How's the workload feeling this week — manageable, or stretched thin?",
+    "What's been the brightest part of work lately?",
+    "Anything outside work weighing on you that I should know about?",
+    "How are things with your team — feeling connected, or a bit isolated?",
+    "On a scale of 1-10, how energized do you feel about your role right now?",
+    "Is there a project or person that's been particularly draining or recharging?",
+    "How's the work-life balance holding up?",
+    "Is there anything you'd change about how this week is going?",
+]
+
+
+def _pulse_asked_recently(db: Session, user_id: UUID) -> bool:
+    """True if the bot has already asked a pulse question in the cooldown window."""
+    cutoff = utcnow_naive() - timedelta(days=_PULSE_COOLDOWN_DAYS)
+    return (
+        db.query(Message.id)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .filter(Conversation.user_id == user_id)
+        .filter(Message.sender == MessageSender.bot)
+        .filter(Message.created_at >= cutoff)
+        .filter(Message.message_text.contains(_PULSE_QUESTION_PREFIX))
+        .first()
+        is not None
+    )
+
+
+def _pick_pulse_question(db: Session, user_id: UUID) -> str:
+    """Random pulse question, but never the one most recently asked of this user."""
+    last_row = (
+        db.query(Message.message_text)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .filter(Conversation.user_id == user_id)
+        .filter(Message.sender == MessageSender.bot)
+        .filter(Message.message_text.contains(_PULSE_QUESTION_PREFIX))
+        .order_by(Message.created_at.desc())
+        .first()
+    )
+    last_text = (last_row[0] if last_row else "") or ""
+    asked_last = next((q for q in _PULSE_QUESTIONS if q in last_text), None)
+    pool = [q for q in _PULSE_QUESTIONS if q != asked_last] or list(_PULSE_QUESTIONS)
+    return random.choice(pool)
+
 
 @dataclass
 class ProactiveOpening:
@@ -222,6 +270,11 @@ def build_proactive_chat_opening(db: Session, user: User) -> ProactiveOpening:
         body = random.choice(WIND_DOWN_OPENERS if evening else DAILY_CHECKIN_OPENERS)
         if fn.lower() != "there":
             body = f"Hey {fn} — {body[0].lower()}{body[1:]}"
+        # Occasional life/work pulse so HR sees a steady signal of how the
+        # employee is feeling, not just ticket/leave events. Skip when the
+        # recent tone is negative — empathy comes first, not another question.
+        if tone != "negative" and not _pulse_asked_recently(db, user.id):
+            body = f"{body}\n\n{_PULSE_QUESTION_PREFIX} {_pick_pulse_question(db, user.id)}"
         return ProactiveOpening(text=body, suggested_mood_checkin=True)
 
     mode = "support" if tone == "negative" else "assistant"

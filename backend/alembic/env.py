@@ -5,6 +5,7 @@ from alembic import context
 
 # Import models to register them with Base.metadata
 from app.database import Base
+from app.config import settings
 import app.models
 
 target_metadata = Base.metadata
@@ -16,8 +17,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Get database URL from environment or alembic.ini
-url = os.getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url"))
+# Resolve the database URL the same way the app does so `alembic` and the
+# running service always target the same database. Precedence:
+#   1. an explicit DATABASE_URL in the shell environment (CI / one-off overrides)
+#   2. app settings, which load the project-root .env (the app's real DB)
+#   3. the alembic.ini placeholder (last resort)
+url = os.getenv("DATABASE_URL") or settings.DATABASE_URL or config.get_main_option("sqlalchemy.url")
 config.set_main_option("sqlalchemy.url", url)
 
 

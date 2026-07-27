@@ -3,13 +3,19 @@ import { useAuth } from "@/contexts/AuthContext";
 import {
   closeConversation,
   fetchMemoryCards,
+  fetchPendingNudges,
   requestChatReply,
   startChatSession,
   submitChatCsat,
   type ChatAttachmentMeta,
 } from "@/lib/chat-api";
 import { mapFlowMetadataToControl } from "@/lib/flow-metadata-ui";
-import { loadChatSnapshot, saveChatSnapshot } from "@/lib/chat-session-storage";
+import {
+  loadChatSnapshot,
+  loadNudgeWatermark,
+  saveChatSnapshot,
+  saveNudgeWatermark,
+} from "@/lib/chat-session-storage";
 import { logMyMood } from "@/lib/api/portal";
 import { subscribeToSse } from "@/lib/api/client";
 import type { ChatRecord, ControlState, FlowMetadata, MemoryCard } from "@/types/chat";
@@ -230,11 +236,36 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       onEvent: (eventType, payload) => {
         if (eventType !== "user_nudge") return;
         const text = typeof payload.message === "string" ? payload.message.trim() : "";
-        if (text) appendAssistant(text);
+        if (text) {
+          appendAssistant(text);
+          // Live delivery counts as seen, so the catch-up fetch won't repeat it.
+          saveNudgeWatermark(session.email, new Date().toISOString());
+        }
       },
     });
     return unsubscribe;
   }, [session?.email, session?.role, appendAssistant]);
+
+  // Catch-up: check-ins sent while this client was closed. SSE only reaches an
+  // open tab and the transcript is restored from local storage, so without this
+  // a nudge to an away employee — the whole point of the feature — is never seen.
+  useEffect(() => {
+    if (!session?.email || session.role !== "employee" || !chatReady) return;
+    let cancelled = false;
+
+    void fetchPendingNudges(session, loadNudgeWatermark(session.email)).then((nudges) => {
+      if (cancelled || nudges.length === 0) return;
+      nudges.forEach((nudge) => {
+        if (nudge.text.trim()) appendAssistant(nudge.text);
+      });
+      const newest = nudges[nudges.length - 1]?.createdAt;
+      if (newest) saveNudgeWatermark(session.email, newest);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.email, session?.role, chatReady, appendAssistant]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ...config import settings
 from ...database import get_db
 from ...core.time import utcnow_naive
-from ...auth import get_current_user
+from ...auth import get_current_user, require_roles
 from ...models.calendar_integration import CalendarIntegration
 from ...models.user import User
 from ...services.calendar import CalendarService
@@ -779,3 +779,38 @@ def trigger_payroll_sync(
             if not payload.dry_run:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Live payroll sync failed: {str(exc)}")
     return _run_stub_sync(provider=provider, category="payroll", dry_run=payload.dry_run)
+
+
+@router.get("/teams/status")
+def teams_status(_hr: User = Depends(require_roles(["hr", "admin"]))):
+    """Reports whether Teams notifications are wired (env-only — no DB)."""
+    from ...services.teams_service import is_enabled as _teams_enabled
+    return {
+        "enabled": _teams_enabled(),
+        "webhook_configured": bool((settings.TEAMS_WEBHOOK_URL or "").strip()),
+        "flag_on": bool(settings.ENABLE_TEAMS_NOTIFICATIONS),
+    }
+
+
+@router.post("/teams/test")
+def teams_test(_hr: User = Depends(require_roles(["hr", "admin"]))):
+    """Fires a one-off test card so HR can confirm the webhook actually delivers."""
+    from ...services.teams_service import post_message, is_enabled as _teams_enabled
+    if not _teams_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Teams not configured. Set TEAMS_WEBHOOK_URL and "
+                "ENABLE_TEAMS_NOTIFICATIONS=true, then retry."
+            ),
+        )
+    ok = post_message(
+        title="MARK — test notification",
+        body=(
+            "If you can see this card, the Teams webhook is correctly wired. "
+            "HR alerts and pattern detections will land in this channel."
+        ),
+        severity="info",
+        dashboard_url=(settings.TEAMS_DASHBOARD_URL or "").strip() or None,
+    )
+    return {"delivered": ok}
