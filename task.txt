@@ -61,6 +61,21 @@ A. Sentiment & signals (core product)
        trend, risk and top_emotion move. Covered by integration tests, not by
        an observed staging run.
 
+A2. KNOWN PRODUCT ISSUE — composer can silently drop a send
+   [ ] The chat send button is disabled while `isSending || isTyping`, and
+       handleSend returns early on isSending. Both are transient, so a send
+       issued while the previous reply is settling can be swallowed with no
+       feedback: the text is cleared, no request goes out, and the employee
+       believes they sent it.
+       Evidence: CI logged 2 POSTs for a 6-turn conversation. The browser test
+       now retries each turn (up to 3 attempts) and the retry fires on most
+       turns — the appointment spec went from ~56s to ~2.9m purely on retries.
+       That retry compensates for the race; it does not fix it.
+       Fix properly by queueing or disabling only on isSending, and by
+       surfacing a failed send instead of clearing the input. For a product
+       where the message may be someone's first disclosure of a problem,
+       losing it silently is the worst failure mode available.
+
 B. HR visibility & trust
    [ ] Document for HR: which screens map to which APIs (/analytics/dashboard,
        /employees, /emotions, attrition, /requests).
