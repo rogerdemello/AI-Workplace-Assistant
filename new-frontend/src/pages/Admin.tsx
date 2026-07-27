@@ -16,6 +16,8 @@ import {
   triggerPayrollSync,
   getWellbeingHighRisk,
   getWeeklyWellbeingSummary,
+  inviteUser,
+  adminUpdateUser,
   type AdminUserRow,
   type AutomationRuleRow,
   type HighRiskEmployeeRow,
@@ -25,6 +27,8 @@ import {
   type WeeklyWellbeingSummary,
 } from "@/lib/services";
 import { toast } from "sonner";
+
+const ROLE_OPTIONS = ["employee", "manager", "hr", "admin"] as const;
 
 const roleColors: Record<string, string> = {
   admin: "bg-danger-soft text-danger",
@@ -41,6 +45,39 @@ export default function Admin() {
   const [syncBusyKey, setSyncBusyKey] = useState<string | null>(null);
   const [highRiskRows, setHighRiskRows] = useState<HighRiskEmployeeRow[]>([]);
   const [weeklySummary, setWeeklySummary] = useState<WeeklyWellbeingSummary | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+
+  const refreshUsers = () => getAdminUsers().then(setUsers);
+
+  const changeUserRole = async (user: AdminUserRow, role: string) => {
+    setOpenMenuId(null);
+    if (role === user.role) return;
+    setActionBusyId(user.id);
+    const ok = await adminUpdateUser(user.id, { role });
+    setActionBusyId(null);
+    if (!ok) {
+      toast.error(`Could not change role for ${user.name}.`);
+      return;
+    }
+    toast.success(`${user.name} is now ${role}.`);
+    void refreshUsers();
+  };
+
+  const toggleUserActive = async (user: AdminUserRow) => {
+    setOpenMenuId(null);
+    setActionBusyId(user.id);
+    const nextStatus = user.active ? "inactive" : "active";
+    const ok = await adminUpdateUser(user.id, { status: nextStatus });
+    setActionBusyId(null);
+    if (!ok) {
+      toast.error(`Could not update ${user.name}.`);
+      return;
+    }
+    toast.success(`${user.name} ${user.active ? "deactivated" : "reactivated"}.`);
+    void refreshUsers();
+  };
 
   useEffect(() => {
     getAdminUsers().then(setUsers);
@@ -226,7 +263,11 @@ export default function Admin() {
       title="Admin"
       subtitle="Roles, permissions, and access"
       topbarAction={
-        <button type="button" className="hidden md:inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-ink text-primary-foreground text-sm">
+        <button
+          type="button"
+          onClick={() => setInviteOpen(true)}
+          className="hidden md:inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-ink text-primary-foreground text-sm"
+        >
           <Plus className="size-4" /> Invite
         </button>
       }
@@ -275,9 +316,46 @@ export default function Admin() {
                   <span className={cn("size-1.5 rounded-full", u.active ? "bg-emerald" : "bg-muted-foreground/40")} />
                   {u.active ? "Active" : "Inactive"}
                 </div>
-                <button type="button" className="size-7 rounded-md hover:bg-secondary grid place-items-center">
-                  <MoreHorizontal className="size-4 text-muted-foreground" />
-                </button>
+                <div className="relative justify-self-end">
+                  <button
+                    type="button"
+                    disabled={actionBusyId === u.id}
+                    onClick={() => setOpenMenuId((prev) => (prev === u.id ? null : u.id))}
+                    className="size-7 rounded-md hover:bg-secondary grid place-items-center disabled:opacity-50"
+                  >
+                    <MoreHorizontal className="size-4 text-muted-foreground" />
+                  </button>
+                  {openMenuId === u.id && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setOpenMenuId(null)} />
+                      <div className="absolute right-0 mt-1 z-20 w-44 rounded-lg border border-border bg-card shadow-lg py-1 text-sm">
+                        <div className="px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Set role</div>
+                        {ROLE_OPTIONS.map((role) => (
+                          <button
+                            key={role}
+                            type="button"
+                            onClick={() => void changeUserRole(u, role)}
+                            className={cn(
+                              "w-full text-left px-3 py-1.5 hover:bg-secondary capitalize flex items-center justify-between",
+                              u.role === role && "text-accent",
+                            )}
+                          >
+                            {role}
+                            {u.role === role && <span className="text-xs">current</span>}
+                          </button>
+                        ))}
+                        <div className="my-1 h-px bg-border" />
+                        <button
+                          type="button"
+                          onClick={() => void toggleUserActive(u)}
+                          className="w-full text-left px-3 py-1.5 hover:bg-secondary text-danger"
+                        >
+                          {u.active ? "Deactivate user" : "Reactivate user"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
               </li>
             ))}
             {users.length === 0 && (
@@ -559,7 +637,117 @@ export default function Admin() {
           </ul>
         </div>
       </div>
+      {inviteOpen && (
+        <InviteUserDialog
+          onClose={() => setInviteOpen(false)}
+          onInvited={() => {
+            setInviteOpen(false);
+            void refreshUsers();
+          }}
+        />
+      )}
     </AppLayout>
+  );
+}
+
+function InviteUserDialog({ onClose, onInvited }: { onClose: () => void; onInvited: () => void }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<string>("employee");
+  const [designation, setDesignation] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!name.trim() || !email.trim()) {
+      toast.error("Name and email are required.");
+      return;
+    }
+    setBusy(true);
+    const result = await inviteUser({
+      name: name.trim(),
+      email: email.trim(),
+      role,
+      designation: designation.trim() || undefined,
+    });
+    setBusy(false);
+    if (!result) {
+      toast.error("Could not invite user — they may already exist.");
+      return;
+    }
+    if (result.invite_email_sent) {
+      toast.success(`Invite emailed to ${result.email}.`);
+    } else {
+      toast.success(`User created. Temporary password: ${result.temp_password}`, { duration: 12000 });
+    }
+    onInvited();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="text-sm font-medium mb-1">Invite a user</div>
+        <div className="text-xs text-muted-foreground mb-4">
+          A temporary password is generated. We email the invite when SMTP is configured, otherwise the password is shown once here.
+        </div>
+        <div className="space-y-3">
+          <label className="block text-xs text-muted-foreground">
+            <div className="mb-1">Full name</div>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+              placeholder="Jane Doe"
+            />
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            <div className="mb-1">Work email</div>
+            <input
+              value={email}
+              type="email"
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+              placeholder="jane@company.com"
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block text-xs text-muted-foreground">
+              <div className="mb-1">Role</div>
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground capitalize"
+              >
+                {ROLE_OPTIONS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs text-muted-foreground">
+              <div className="mb-1">Designation</div>
+              <input
+                value={designation}
+                onChange={(e) => setDesignation(e.target.value)}
+                className="w-full h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                placeholder="Optional"
+              />
+            </label>
+          </div>
+        </div>
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg border border-border text-sm">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={busy}
+            className="px-3 py-2 rounded-lg bg-ink text-primary-foreground text-sm disabled:opacity-50"
+          >
+            {busy ? "Inviting…" : "Send invite"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -140,3 +140,103 @@ jobs:
         with:
           name: smoke-server-log
           path: backend/server.log
+
+  browser-e2e:
+    name: Browser E2E (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [backend-tests, frontend-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: new-frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Repeated rather than shared via a YAML anchor: the GitHub Actions
+      # workflow parser rejects anchors and aliases.
+      - name: Seed demo users
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite:///./e2e.db
+          REDIS_URL: redis://localhost:6379
+          AZURE_OPENAI_API_KEY: mock-key
+          AZURE_OPENAI_ENDPOINT: https://mock.openai.azure.com
+          AZURE_OPENAI_DEPLOYMENT: gpt-4
+          SECRET_KEY: ci-e2e-secret
+          FAST_CHAT_MODE: "true"
+          ENABLE_ALERT_BACKGROUND: "false"
+        run: python -m scripts.seed_dummy_users
+
+      # playwright.config.ts expects the API on :8099 and the app on :8080 and
+      # deliberately declares no webServer, so both are started here.
+      - name: Start backend on :8099
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite:///./e2e.db
+          REDIS_URL: redis://localhost:6379
+          AZURE_OPENAI_API_KEY: mock-key
+          AZURE_OPENAI_ENDPOINT: https://mock.openai.azure.com
+          AZURE_OPENAI_DEPLOYMENT: gpt-4
+          SECRET_KEY: ci-e2e-secret
+          FAST_CHAT_MODE: "true"
+          ENABLE_ALERT_BACKGROUND: "false"
+        run: |
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8099 > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8099/healthz > /dev/null; then
+              echo "backend ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "backend never became healthy"; cat server.log; exit 1
+
+      - name: Install frontend dependencies
+        working-directory: new-frontend
+        run: npm ci || npm install
+
+      - name: Install Playwright browsers
+        working-directory: new-frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Start frontend on :8080
+        working-directory: new-frontend
+        env:
+          VITE_API_URL: http://127.0.0.1:8099
+        run: |
+          nohup npx vite --port 8080 --host 127.0.0.1 > vite.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/ > /dev/null; then
+              echo "frontend ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "frontend never became ready"; cat vite.log; exit 1
+
+      - name: Run Playwright
+        working-directory: new-frontend
+        run: npm run test:e2e
+
+      - name: Upload logs and traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-artifacts
+          path: |
+            backend/server.log
+            new-frontend/vite.log
+            new-frontend/test-results/

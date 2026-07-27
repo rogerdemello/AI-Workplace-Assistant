@@ -10,6 +10,7 @@ export interface SubscriptionSummary {
   currency: string;
   monthlyEstimate: number;
   features: string[];
+  source: "stripe" | "config";
 }
 
 export async function getBillingSubscription(): Promise<SubscriptionSummary | null> {
@@ -25,5 +26,6 @@ export async function getBillingSubscription(): Promise<SubscriptionSummary | nu
     currency: String(row.currency ?? "USD"),
     monthlyEstimate: Number(row.monthly_estimate ?? 0),
     features: Array.isArray(row.features) ? row.features.map(String) : [],
+    source: row.source === "stripe" ? "stripe" : "config",
   };
 }

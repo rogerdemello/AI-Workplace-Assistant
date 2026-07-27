@@ -282,7 +282,9 @@ def compute_department_heatmap(db: Session) -> List[Dict[str, Any]]:
 def sentiment_trend_days(db: Session, days: int = 14) -> List[Dict[str, Any]]:
     days = max(1, min(days, 90))
     start = utcnow_naive() - timedelta(days=days - 1)
-    day_key = cast(Message.created_at, Date)
+    # func.date() is the portable pattern used elsewhere in this module; the
+    # earlier cast(..., Date) broke SQLite result processing (fromisoformat).
+    day_key = func.date(Message.created_at)
 
     rows = (
         db.query(day_key, Message.sentiment, func.count(Message.id))

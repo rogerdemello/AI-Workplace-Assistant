@@ -198,12 +198,15 @@ def get_available_buddies(
     service = BuddyAssignmentService(db)
     dept_id = None
     buddies = service.get_available_buddies(dept_id)
+    # User has no `department` attribute (only department_id) — resolve names.
+    from ...models.department import Department
+    dept_names = {str(d.id): d.name for d in db.query(Department).all()}
     return [
         AvailableBuddyResponse(
             id=b.id,
             name=b.name,
             email=b.email,
-            department=b.department,
+            department=dept_names.get(str(b.department_id)) if b.department_id else None,
             designation=b.designation
         )
         for b in buddies
