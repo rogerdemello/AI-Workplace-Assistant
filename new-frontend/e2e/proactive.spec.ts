@@ -25,6 +25,27 @@ async function tokenFrom(page: Page): Promise<string> {
   return token as string;
 }
 
+/**
+ * Log in over the API rather than in a browser page.
+ *
+ * Signing a second role in through the UI overwrites the shared auth entry in
+ * local storage, so the page under test silently becomes that other user — and
+ * the leak outlives the test. Keep every non-subject actor out of the browser.
+ */
+async function apiToken(
+  request: APIRequestContext,
+  email: string,
+  password = "password123",
+): Promise<string> {
+  const res = await request.post(`${API}/api/v1/auth/login`, {
+    data: { email, password },
+  });
+  expect(res.ok(), `login failed for ${email}: ${res.status()}`).toBeTruthy();
+  const token = (await res.json()).access_token as string;
+  expect(token, `no access_token for ${email}`).toBeTruthy();
+  return token;
+}
+
 async function api(
   request: APIRequestContext,
   token: string,
@@ -55,14 +76,12 @@ test("HR's decision reaches the employee's chat after they return", async ({
   });
 
   // 2. HR actions it while the employee is away — no chat open, so SSE reaches
-  //    nobody and only the durable path can carry it.
-  const hrPage = await page.context().browser()!.newPage();
-  await loginAs(hrPage, "HR");
-  const hrToken = await tokenFrom(hrPage);
+  //    nobody and only the durable path can carry it. HR acts over the API so
+  //    the employee's browser session is never touched.
+  const hrToken = await apiToken(request, "hr1@mark.ai");
   await api(request, hrToken, "patch", `/api/v1/requests/${created.id}/approve`, {
     hr_note: `Sent to payroll ${stamp}`,
   });
-  await hrPage.close();
 
   // 3. Employee comes back and opens chat. The decision must be waiting.
   await page.goto("/chat");

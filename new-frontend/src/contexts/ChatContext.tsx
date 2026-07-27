@@ -10,12 +10,7 @@ import {
   type ChatAttachmentMeta,
 } from "@/lib/chat-api";
 import { mapFlowMetadataToControl } from "@/lib/flow-metadata-ui";
-import {
-  loadChatSnapshot,
-  loadNudgeWatermark,
-  saveChatSnapshot,
-  saveNudgeWatermark,
-} from "@/lib/chat-session-storage";
+import { loadChatSnapshot, saveChatSnapshot } from "@/lib/chat-session-storage";
 import { logMyMood } from "@/lib/api/portal";
 import { subscribeToSse } from "@/lib/api/client";
 import type { ChatRecord, ControlState, FlowMetadata, MemoryCard } from "@/types/chat";
@@ -98,6 +93,19 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const breakTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const secondBreakTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSentAtRef = useRef(0);
+
+  /** Append a proactive message unless that exact text is already on screen.
+   *
+   *  Deduping on content is what lets the catch-up fetch be safely idempotent:
+   *  a nudge delivered live over SSE and then returned again by the fetch shows
+   *  once, and one that never rendered still gets a second chance. */
+  const appendAssistantIfNew = useCallback((text: string) => {
+    setMessages((current) =>
+      current.some((m) => m.role === "assistant" && m.text === text)
+        ? current
+        : [...current, { id: shortId(), role: "assistant", text }],
+    );
+  }, []);
 
   const appendAssistant = useCallback((text: string) => {
     setMessages((current) => [...current, { id: shortId(), role: "assistant", text }]);
@@ -236,15 +244,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       onEvent: (eventType, payload) => {
         if (eventType !== "user_nudge") return;
         const text = typeof payload.message === "string" ? payload.message.trim() : "";
-        if (text) {
-          appendAssistant(text);
-          // Live delivery counts as seen, so the catch-up fetch won't repeat it.
-          saveNudgeWatermark(session.email, new Date().toISOString());
-        }
+        // Deliberately does NOT advance the watermark. That was keyed on
+        // wall-clock "now", so one live nudge marked every earlier one as seen
+        // — and if this message did not survive in state, the catch-up fetch
+        // could never recover it. Dedupe by content instead.
+        if (text) appendAssistantIfNew(text);
       },
     });
     return unsubscribe;
-  }, [session?.email, session?.role, appendAssistant]);
+  }, [session?.email, session?.role, appendAssistantIfNew]);
 
   // Catch-up: check-ins sent while this client was closed. SSE only reaches an
   // open tab and the transcript is restored from local storage, so without this
@@ -253,19 +261,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (!session?.email || session.role !== "employee" || !chatReady) return;
     let cancelled = false;
 
-    void fetchPendingNudges(session, loadNudgeWatermark(session.email)).then((nudges) => {
+    // No client-side watermark. The transcript lives in local storage and can
+    // be cleared, replaced, or simply not saved before a reload — so anything
+    // that marks a nudge "seen" independently of the transcript will eventually
+    // suppress a message the employee never actually read. Re-fetching the
+    // recent window every time and deduping by content is idempotent, and
+    // errs toward showing an HR message twice rather than losing it.
+    void fetchPendingNudges(session, null).then((nudges) => {
       if (cancelled || nudges.length === 0) return;
       nudges.forEach((nudge) => {
-        if (nudge.text.trim()) appendAssistant(nudge.text);
+        if (nudge.text.trim()) appendAssistantIfNew(nudge.text);
       });
-      const newest = nudges[nudges.length - 1]?.createdAt;
-      if (newest) saveNudgeWatermark(session.email, newest);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [session?.email, session?.role, chatReady, appendAssistant]);
+  }, [session?.email, session?.role, chatReady, appendAssistantIfNew]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
