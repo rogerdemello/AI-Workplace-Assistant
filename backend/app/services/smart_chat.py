@@ -19,6 +19,7 @@ from difflib import SequenceMatcher
 from datetime import datetime, date, timedelta, timezone
 
 from ..models.leave_request import LeaveRequest, LeaveStatus, LeaveType
+from ..models.employee_request import EmployeeRequest, RequestStatus, RequestType
 from ..models.ticket import Ticket, TicketPriority, TicketStatus
 from ..services.ticket import TicketService
 
@@ -251,6 +252,38 @@ class SmartChatService:
         "how much leave": "leave_balance",
         "remaining leave": "leave_balance",
         "leave quota": "leave_balance",
+        # Appointment with HR. Kept narrow on purpose — the productivity agent
+        # owns generic room booking and "schedule a meeting with <person>", so
+        # only "appointment" or an explicit HR counterpart routes here.
+        "book an appointment": "appointment_request",
+        "book appointment": "appointment_request",
+        "schedule an appointment": "appointment_request",
+        "appointment with hr": "appointment_request",
+        "1:1 with hr": "appointment_request",
+        "meeting with hr": "appointment_request",
+        "meet with hr": "appointment_request",
+        # Expense / reimbursement
+        "reimbursement": "expense_claim",
+        "reimburse me": "expense_claim",
+        "expense claim": "expense_claim",
+        "claim my expenses": "expense_claim",
+        "file an expense": "expense_claim",
+        "submit an expense": "expense_claim",
+        # Shift change / remote work — deliberately NOT a bare "work from home",
+        # which is also a valid answer to the leave flow's leave_type question.
+        "shift change": "shift_change_request",
+        "change my shift": "shift_change_request",
+        "swap my shift": "shift_change_request",
+        "switch my shift": "shift_change_request",
+        "work remotely": "shift_change_request",
+        # HR documents
+        "payslip": "document_request",
+        "pay slip": "document_request",
+        "salary slip": "document_request",
+        "form 16": "document_request",
+        "employment letter": "document_request",
+        "experience letter": "document_request",
+        "salary certificate": "document_request",
         # General conversation / context breakers (reset flow)
         "tell me a joke": "general_query",
         "joke": "general_query",
@@ -406,6 +439,16 @@ class SmartChatService:
         if classified_intent in {"ticket_create", "complaint"}:
             if any(keyword in msg for keyword in self.LEAVE_BALANCE_KEYWORDS):
                 return "leave_balance"
+
+        # "work from home" is both a leave type and a shift-change request. While the
+        # leave flow is asking for the type, a bare answer is answering that question.
+        if (
+            self.current_flow == "leave_request"
+            and classified_intent == "shift_change_request"
+            and re.fullmatch(r"(work\s+from\s+home|wfh|remote)\W*", msg)
+        ):
+            return "leave_request"
+
         return classified_intent
     
     def _is_greeting(self, message: str) -> bool:
@@ -782,6 +825,105 @@ class SmartChatService:
             f"{start} to {end} submitted. Your manager will review it soon. 🗓️{empathy}"
         )
     
+    #: flow name → (request type, title template, closing line)
+    _REQUEST_FLOW_SPEC = {
+        "appointment_request": (
+            RequestType.appointment,
+            "1:1 with HR",
+            "Booked — HR will confirm the slot with you shortly. 📅",
+        ),
+        "expense_claim": (
+            RequestType.expense,
+            "Expense claim",
+            "Submitted — Finance will pick it up from here. 🧾",
+        ),
+        "shift_change_request": (
+            RequestType.shift_change,
+            "Shift change request",
+            "Sent — your manager will review it and HR has a copy. 🔄",
+        ),
+        "document_request": (
+            RequestType.document,
+            "Document request",
+            "Requested — HR will send it across once it's ready. 📄",
+        ),
+    }
+
+    def _complete_employee_request(self, flow_name: str, data: Dict) -> str:
+        """Persist a confirmed appointment / expense / shift-change / document request."""
+        spec = self._REQUEST_FLOW_SPEC.get(flow_name)
+        if not spec:
+            logger.warning(f"Unknown request flow: {flow_name}")
+            return "Something went wrong on my side. Could you try that again?"
+
+        request_type, title_fallback, closing = spec
+
+        missing = self.orchestrator.flow_manager.missing_fields(flow_name, data)
+        if missing:
+            return "Almost there — I still need a couple of details before I can submit this."
+
+        from .chat.flow_manager import coerce_amount, coerce_time
+
+        request = EmployeeRequest(
+            user_id=self.user_id,
+            request_type=request_type,
+            status=RequestStatus.pending,
+            title=self._build_request_title(flow_name, data, title_fallback),
+            details={k: v for k, v in data.items() if v is not None},
+        )
+
+        if request_type == RequestType.appointment:
+            preferred_date = self._coerce_date(data.get("preferred_date"))
+            preferred_time = coerce_time(data.get("preferred_time"))
+            if preferred_date and preferred_time:
+                hour, minute = (int(p) for p in preferred_time.split(":"))
+                request.scheduled_at = datetime.combine(
+                    preferred_date, datetime.min.time()
+                ).replace(hour=hour, minute=minute)
+        elif request_type == RequestType.expense:
+            request.amount = coerce_amount(data.get("amount"))
+            request.start_date = self._coerce_date(data.get("expense_date"))
+        elif request_type == RequestType.shift_change:
+            request.start_date = self._coerce_date(data.get("start_date"))
+            request.end_date = self._coerce_date(data.get("end_date"))
+
+        self.db.add(request)
+        try:
+            self.db.commit()
+        except Exception as exc:
+            self.db.rollback()
+            logger.error(f"Employee request creation failed ({flow_name}): {exc}")
+            return "Something went wrong saving that request. Please try again."
+
+        self._reset_flow()
+        return f"{closing} {self._request_summary(flow_name, data)}".strip()
+
+    def _build_request_title(self, flow_name: str, data: Dict, fallback: str) -> str:
+        if flow_name == "appointment_request":
+            topic = (data.get("topic") or "").strip()
+            return f"1:1 with HR — {topic}"[:255] if topic else fallback
+        if flow_name == "expense_claim":
+            expense_type = (data.get("expense_type") or "").strip()
+            return f"{expense_type.title()} expense claim"[:255] if expense_type else fallback
+        if flow_name == "shift_change_request":
+            change_type = (data.get("change_type") or "").strip()
+            return f"{change_type.title()} request"[:255] if change_type else fallback
+        if flow_name == "document_request":
+            document_type = (data.get("document_type") or "").strip()
+            return f"{document_type.title()} request"[:255] if document_type else fallback
+        return fallback
+
+    def _request_summary(self, flow_name: str, data: Dict) -> str:
+        if flow_name == "appointment_request":
+            return f"({data.get('preferred_date')} at {data.get('preferred_time')}, {data.get('mode')})"
+        if flow_name == "expense_claim":
+            return f"({data.get('expense_type')}, {data.get('amount')} on {data.get('expense_date')})"
+        if flow_name == "shift_change_request":
+            return f"({data.get('start_date')} to {data.get('end_date')})"
+        if flow_name == "document_request":
+            return f"({data.get('document_type')})"
+        return ""
+
     def _handle_policy_query(self, message: str) -> str:
         """Handle policy query using RAG."""
         if not get_feature_flags().enable_rag:

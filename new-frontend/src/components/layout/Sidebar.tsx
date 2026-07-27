@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Home, Ticket, Users, BarChart3, Mail, Shield, MessageSquare, Sparkles, UserCircle2, Briefcase, LogOut, CreditCard, BookOpen } from "lucide-react";
+import { Home, Ticket, Users, BarChart3, Mail, Shield, MessageSquare, Sparkles, UserCircle2, Briefcase, LogOut, CreditCard, BookOpen, DoorOpen, ClipboardList } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth, type UserRole } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ const sections: { label: string; items: NavItem[] }[] = [
     items: [
       { to: "/employee", icon: Home, label: "My Day", roles: ["employee"] },
       { to: "/chat", icon: MessageSquare, label: "Conversations" },
+      { to: "/rooms", icon: DoorOpen, label: "Room Booking" },
     ],
   },
   {
@@ -20,6 +21,7 @@ const sections: { label: string; items: NavItem[] }[] = [
     items: [
       { to: "/dashboard", icon: BarChart3, label: "Pulse", roles: ["hr"] },
       { to: "/tickets", icon: Ticket, label: "Tickets" },
+      { to: "/requests", icon: ClipboardList, label: "Requests" },
       { to: "/employees", icon: Users, label: "Employees", roles: ["hr"] },
       { to: "/manager", icon: Briefcase, label: "Manager" },
       { to: "/surveys", icon: Sparkles, label: "Surveys" },

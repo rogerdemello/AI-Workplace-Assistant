@@ -113,12 +113,146 @@ def _heuristic_leave_entities(
     return out
 
 
+#: Ordered slots per conversational request flow — the order the flow asks in.
+REQUEST_FIELDS: Dict[str, list] = {
+    "appointment_request": ["topic", "preferred_date", "preferred_time", "mode"],
+    "expense_claim": ["expense_type", "amount", "expense_date", "description"],
+    "shift_change_request": ["change_type", "start_date", "end_date", "reason"],
+    "document_request": ["document_type", "purpose"],
+}
+
+#: Date slots per flow, in the order they should absorb dates found in a message.
+_REQUEST_DATE_SLOTS: Dict[str, list] = {
+    "appointment_request": ["preferred_date"],
+    "expense_claim": ["expense_date"],
+    "shift_change_request": ["start_date", "end_date"],
+    "document_request": [],
+}
+
+#: Free-text slots — when the flow is waiting on one of these, the whole message is the answer.
+_REQUEST_FREE_TEXT_SLOTS = {"topic", "description", "reason", "purpose"}
+
+_TIME_TEXT = re.compile(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)|(?:[01]?\d|2[0-3]):[0-5]\d)\b", re.IGNORECASE)
+_AMOUNT_TEXT = re.compile(r"(?:[₹$€£]\s*)?(\d[\d,]*(?:\.\d{1,2})?)")
+
+_ENUM_KEYWORDS: Dict[str, list] = {
+    "mode": [
+        (r"\b(in[-\s]?person|face[-\s]?to[-\s]?face|onsite|in\s+office)\b", "in person"),
+        (r"\b(video|zoom|teams|google\s+meet|gmeet|vc)\b", "video"),
+        (r"\b(call|phone|dial)\b", "call"),
+    ],
+    "expense_type": [
+        (r"\b(travel|cab|taxi|flight|train|mileage|fuel|hotel|lodging)\b", "travel"),
+        (r"\b(meal|food|lunch|dinner|breakfast|client\s+dinner)\b", "meals"),
+        (r"\b(laptop|monitor|keyboard|mouse|equipment|hardware|desk|chair)\b", "equipment"),
+        (r"\b(course|training|certification|conference|workshop|book)\b", "training"),
+        (r"\b(internet|broadband|phone\s+bill|mobile\s+bill)\b", "connectivity"),
+    ],
+    "change_type": [
+        (r"\b(wfh|work\s+from\s+home|working\s+from\s+home|remote|remotely)\b", "work from home"),
+        (r"\b(swap|switch|shift\s+change|change\s+my\s+shift|roster)\b", "shift change"),
+    ],
+    "document_type": [
+        (r"\b(pay\s?slip|salary\s+slip)\b", "payslip"),
+        (r"\b(form\s*16|tax\s+(document|certificate|form)|tds)\b", "tax document"),
+        (r"\b(employment\s+letter|employment\s+verification|address\s+proof)\b", "employment letter"),
+        (r"\b(experience\s+letter|relieving\s+letter|service\s+certificate)\b", "experience letter"),
+        (r"\b(salary\s+certificate|income\s+certificate|loan\s+letter)\b", "salary certificate"),
+        (r"\b(offer\s+letter)\b", "offer letter"),
+    ],
+}
+
+
+def _first_missing_request_slot(flow_name: str, current_data: Optional[Dict[str, Any]]) -> Optional[str]:
+    data = current_data or {}
+    for field in REQUEST_FIELDS.get(flow_name, []):
+        value = data.get(field)
+        if value is None:
+            return field
+        if isinstance(value, str) and (not value.strip() or value.strip().lower() == "unspecified"):
+            return field
+    return None
+
+
+def _match_enum_slot(slot: str, text: str) -> Optional[str]:
+    for pattern, label in _ENUM_KEYWORDS.get(slot, []):
+        if re.search(pattern, text, re.IGNORECASE):
+            return label
+    return None
+
+
+def _heuristic_request_entities(
+    flow_name: str,
+    message: str,
+    current_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Optional[Any]]:
+    """Rule-based slot extraction for the request flows — no LLM round-trip needed."""
+    fields = REQUEST_FIELDS.get(flow_name, [])
+    out: Dict[str, Optional[Any]] = {field: None for field in fields}
+    text = (message or "").strip()
+    if not text:
+        return out
+
+    cd = current_data or {}
+    pending = _first_missing_request_slot(flow_name, cd)
+
+    # Enum-ish slots: only adopt a keyword while that slot is still unfilled, so a
+    # word like "travel" in a description doesn't overwrite the chosen type.
+    for slot in fields:
+        if slot not in _ENUM_KEYWORDS:
+            continue
+        if not _slot_missing(cd.get(slot)):
+            continue
+        matched = _match_enum_slot(slot, text)
+        if matched:
+            out[slot] = matched
+
+    # Dates fill the flow's date slots left to right, skipping ones already set.
+    date_slots = [s for s in _REQUEST_DATE_SLOTS.get(flow_name, []) if _slot_missing(cd.get(s))]
+    found_dates = _ISO_DATE.findall(text)
+    for slot, value in zip(date_slots, found_dates):
+        out[slot] = value
+
+    if "preferred_time" in fields and _slot_missing(cd.get("preferred_time")):
+        time_match = _TIME_TEXT.search(text)
+        if time_match:
+            out["preferred_time"] = time_match.group(1)
+
+    if "amount" in fields and _slot_missing(cd.get("amount")):
+        # Skip anything that already parsed as a date so "2024-01-05" isn't an amount.
+        amount_text = _ISO_DATE.sub(" ", text)
+        amount_match = _AMOUNT_TEXT.search(amount_text)
+        if amount_match:
+            out["amount"] = amount_match.group(1)
+
+    # Free-text slot the flow is currently waiting on takes the whole message.
+    if (
+        pending in _REQUEST_FREE_TEXT_SLOTS
+        and out.get(pending) is None
+        and not re.match(r"^(yes|no|yeah|yep|nope|ok|okay|sure)\b", text.lower())
+    ):
+        stripped = _ISO_DATE.sub("", text).strip(" ,.-")
+        if len(stripped) >= 3:
+            out[pending] = text.strip()
+
+    return out
+
+
+def _slot_missing(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        s = value.strip()
+        return not s or s.lower() == "unspecified"
+    return False
+
+
 class EntityExtractor:
     """
     Extracts structured entities from user messages using LLM.
     Supports slot filling for different flow types.
     """
-    
+
     TICKET_FIELDS = ["department", "issue", "severity", "anonymous", "against", "timeline", "details"]
     LEAVE_FIELDS = ["leave_type", "start_date", "end_date", "reason"]
     
@@ -243,6 +377,58 @@ Return ONLY the JSON, no other text."""
                 "reason": None
             }
     
+    def extract_request_entities(
+        self,
+        flow_name: str,
+        message: str,
+        current_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Optional[Any]]:
+        """
+        Extract slots for an appointment / expense / shift-change / document request.
+
+        Heuristics run first and win when they find anything, so the common phrasings
+        stay LLM-free; the model only fills the gaps for unusual wording.
+        """
+        fields = REQUEST_FIELDS.get(flow_name, [])
+        if not fields:
+            return {}
+
+        heuristic = _heuristic_request_entities(flow_name, message, current_data)
+        if _fast_chat_enabled() and any(v is not None for v in heuristic.values()):
+            return heuristic
+
+        prompt = f"""Extract {flow_name.replace('_', ' ')} details from this message.
+
+Message: "{message}"
+
+Return ONLY a JSON object with these fields (null if not mentioned):
+- {", ".join(fields)}
+
+Dates must be ISO format (YYYY-MM-DD). Times must be 24-hour HH:MM. Amounts must be plain numbers.
+
+Return ONLY the JSON, no other text."""
+
+        try:
+            response = self.ai_client.chat_completion(
+                messages=[
+                    {"role": "system", "content": "You extract structured data from user messages. Return valid JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=200,
+            )
+            content = response["choices"][0]["message"]["content"]
+            result = json.loads(content.strip())
+        except Exception as e:
+            logger.warning(f"Request entity extraction failed for {flow_name}: {e}")
+            return heuristic
+
+        # Heuristics are the more reliable signal for the slots they resolve.
+        return {
+            field: heuristic.get(field) if heuristic.get(field) is not None else result.get(field)
+            for field in fields
+        }
+
     def extract_generic(self, message: str, fields: list) -> Dict[str, Optional[str]]:
         """
         Extract generic entities based on provided field list.
@@ -289,4 +475,4 @@ def get_entity_extractor(use_mock: bool = False) -> EntityExtractor:
     return EntityExtractor(use_mock=use_mock)
 
 
-__all__ = ["EntityExtractor", "get_entity_extractor"]
+__all__ = ["EntityExtractor", "get_entity_extractor", "REQUEST_FIELDS"]

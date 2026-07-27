@@ -73,7 +73,9 @@ class ConversationOrchestrator:
         sentiment = sentiment_result.get("sentiment", "neutral")
 
         mode = detect_conversation_mode(intent=intent, sentiment=sentiment, message=message)
-        if self.service.current_flow in {"ticket", "leave_request"}:
+        if self.service.current_flow in {"ticket", "leave_request"} or (
+            self.service.current_flow in self.flow_manager.SLOT_FLOWS
+        ):
             mode = "action"
         self.service.conversation_mode = mode
         self.service.flow_context["conversation_mode"] = mode
@@ -193,6 +195,8 @@ class ConversationOrchestrator:
         flow_name = self.service.current_flow
         if flow_name in {"ticket", "leave_request"}:
             return self._run_flow(flow_name=flow_name, intent=intent, message=message)
+        if flow_name in self.flow_manager.SLOT_FLOWS:
+            return self._run_slot_flow(flow_name=flow_name, intent=intent, message=message)
 
         if intent == "greeting":
             if self.service.flow_context.get("has_greeted"):
@@ -408,6 +412,69 @@ class ConversationOrchestrator:
         if next_step == "anonymous":
             self.service.flow_context["_anon_asked"] = True
 
+        self.service.flow_context["state_contract"] = contract
+        self.service.flow_context["last_question"] = next_step
+        return self.flow_manager.prompt_for_step(flow_name, next_step, contract["data"])
+
+    #: Validation errors that should re-ask a slot instead of advancing the flow.
+    _SLOT_ERROR_STEPS = {
+        "invalid_preferred_date": "preferred_date",
+        "invalid_preferred_time": "preferred_time_invalid",
+        "invalid_expense_date": "expense_date_invalid",
+        "invalid_amount": "amount_invalid",
+        "invalid_start_date": "start_date",
+        "invalid_end_date": "end_date",
+    }
+
+    def _run_slot_flow(self, *, flow_name: str, intent: str, message: str) -> str:
+        """Generic collect → confirm → submit loop for the employee-request flows."""
+        self.service.flow_context["pending_intent"] = intent
+
+        contract_model = FlowStateContract.from_state(
+            self.service.flow_context.get("state_contract"), intent=intent
+        )
+        stashed = self.service.flow_context.get("request_data")
+        if not contract_model.data and stashed:
+            contract_model.data = dict(stashed)
+        contract = contract_model.model_dump()
+
+        if self.service.flow_context.get("last_question") == "confirm":
+            parsed = self.service._parse_yes_no(message)
+            if parsed is True:
+                return self.service._complete_employee_request(
+                    flow_name, dict(contract.get("data") or {})
+                )
+            if parsed is False:
+                return "No problem — tell me what you'd like to change, or say when you're ready to submit."
+
+        extracted = self.service.entity_extractor.extract_request_entities(
+            flow_name,
+            message,
+            current_data=contract.get("data"),
+        )
+        filled = fill_slots(
+            self.flow_manager,
+            flow_name=flow_name,
+            state=contract,
+            extracted_slots=extracted,
+        )
+        contract = filled.state
+        self.service.flow_context["request_data"] = dict(contract["data"])
+
+        for error in filled.errors:
+            step = self._SLOT_ERROR_STEPS.get(error)
+            if step:
+                contract["step"] = step
+                self.service.flow_context["state_contract"] = contract
+                self.service.flow_context["last_question"] = step
+                return self.flow_manager.prompt_for_step(flow_name, step, contract["data"])
+
+        last_question = self.service.flow_context.get("last_question")
+        next_step = self.flow_manager.next_step(
+            flow_name, contract["data"], self.service.flow_context, last_question=last_question
+        )
+        contract["step"] = next_step
+        contract["completed"] = False
         self.service.flow_context["state_contract"] = contract
         self.service.flow_context["last_question"] = next_step
         return self.flow_manager.prompt_for_step(flow_name, next_step, contract["data"])
