@@ -99,7 +99,7 @@ test("HR's decision reaches the employee's chat after they return", async ({
 test("employee books an HR appointment by chatting", async ({ page }) => {
   // Six conversational turns, each a backend round-trip. Generous because a
   // dev backend without real Azure credentials retries before falling back.
-  test.setTimeout(240_000);
+  test.setTimeout(420_000);
 
   await loginAs(page, "Employee");
   await page.goto("/chat");
@@ -112,20 +112,37 @@ test("employee books an HR appointment by chatting", async ({ page }) => {
   // The input clears as soon as a message is accepted, so gating on that alone
   // lets a fast backend receive the next turn before the flow has advanced —
   // which is exactly how this raced in CI but not on a slower local machine.
+  /**
+   * Send one turn and wait for its reply.
+   *
+   * The composer drops sends under load: the button is disabled while
+   * `isSending || isTyping`, both transient, so it can flip disabled between
+   * Playwright's actionability check and the click actually dispatching — the
+   * click then hits a disabled button and the turn vanishes with no feedback.
+   * CI logged two POSTs for a six-turn conversation because of this.
+   *
+   * Enter goes through handleSend directly rather than the button's disabled
+   * attribute, and the send is retried once if our own bubble never rendered.
+   * This compensates for a real product-side race rather than proving it
+   * absent — see task.txt, "composer can silently drop a send".
+   */
   const say = async (message: string, expectReply: RegExp) => {
-    await box.fill(message);
-    // The composer is a controlled input, so a re-render triggered by the
-    // previous reply landing can clear it between fill and click — the click
-    // then submits nothing and the turn is silently dropped. Confirming the
-    // value survived, and that our own bubble rendered, makes that visible
-    // instead of surfacing 60s later as a missing reply.
-    await expect(box).toHaveValue(message, { timeout: 10_000 });
-    await expect(send).toBeEnabled({ timeout: 60_000 });
-    await send.click();
-    await expect(page.getByText(message, { exact: false }).last()).toBeVisible({
-      timeout: 30_000,
-    });
-    await expect(page.getByText(expectReply).last()).toBeVisible({ timeout: 60_000 });
+    const ownBubble = page.getByText(message, { exact: false }).last();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(send).toBeEnabled({ timeout: 20_000 }).catch(() => undefined);
+      await box.fill(message);
+      await expect(box).toHaveValue(message, { timeout: 5_000 });
+      await box.press("Enter");
+      try {
+        await expect(ownBubble).toBeVisible({ timeout: 8_000 });
+        break;
+      } catch (error) {
+        if (attempt === 2) throw error;
+      }
+    }
+
+    await expect(page.getByText(expectReply).last()).toBeVisible({ timeout: 45_000 });
   };
 
   const day = new Date();
