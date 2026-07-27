@@ -114,8 +114,17 @@ test("employee books an HR appointment by chatting", async ({ page }) => {
   // which is exactly how this raced in CI but not on a slower local machine.
   const say = async (message: string, expectReply: RegExp) => {
     await box.fill(message);
+    // The composer is a controlled input, so a re-render triggered by the
+    // previous reply landing can clear it between fill and click — the click
+    // then submits nothing and the turn is silently dropped. Confirming the
+    // value survived, and that our own bubble rendered, makes that visible
+    // instead of surfacing 60s later as a missing reply.
+    await expect(box).toHaveValue(message, { timeout: 10_000 });
     await expect(send).toBeEnabled({ timeout: 60_000 });
     await send.click();
+    await expect(page.getByText(message, { exact: false }).last()).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(page.getByText(expectReply).last()).toBeVisible({ timeout: 60_000 });
   };
 
