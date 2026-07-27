@@ -5,12 +5,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# PII patterns to mask
+# PII patterns to mask.
+#
+# Order matters: credit cards are matched before the looser phone patterns so a
+# 16-digit card is not partly consumed as a number. The international and
+# India-mobile patterns exist because the US-only formats below left the most
+# likely real-world case here unmasked — this deployment defaults to an Indian
+# EAP helpline and INR amounts, so "+91 98765 43210" is the number an employee
+# is most likely to type.
 PII_PATTERNS = {
     'email': r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
     'ssn': r'\b\d{3}-\d{2}-\d{4}\b',
+    # Bounded by non-word/non-hyphen so it cannot bite a chunk out of a UUID:
+    # "00000000-0000-0000-0000-000000000000" was being logged as
+    # "[credit_card_masked]-[credit_card_masked]", which corrupted exactly the
+    # identifiers you need when tracing a request.
+    'credit_card': r'(?<![\w-])\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}(?![\w-])',
     'phone': r'\b\d{3}-\d{3}-\d{4}\b',
-    'credit_card': r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b'
+    # +CC followed by 7-14 more digits, optionally spaced or hyphenated.
+    'phone_intl': r'\+\d{1,3}[\s.-]?(?:\d[\s.-]?){6,13}\d',
+    # Bare Indian mobile: 10 digits starting 6-9. Deliberately anchored so it
+    # cannot swallow ids or timestamps embedded in longer digit runs.
+    'phone_in': r'(?<!\d)[6-9]\d{9}(?!\d)',
 }
 
 # SQL injection dangerous patterns

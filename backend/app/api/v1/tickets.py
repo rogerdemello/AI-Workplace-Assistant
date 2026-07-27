@@ -717,7 +717,14 @@ def add_ticket_message(
 
 
 @router.post("/sla-scan/trigger")
-def trigger_sla_scan():
+def trigger_sla_scan(_hr=Depends(require_roles(["hr", "admin"]))):
+    """Run the SLA breach scan on demand.
+
+    Role-gated: this is an unbounded DB job that also reports how many tickets
+    have breached, so leaving it open let anyone who could reach the API both
+    load the database at will and read internal backlog state. Every other
+    route in this module was already guarded; this one was missed.
+    """
     from ...services.scheduler import check_and_escalate_sla_breached_tickets
     result = check_and_escalate_sla_breached_tickets()
     return result

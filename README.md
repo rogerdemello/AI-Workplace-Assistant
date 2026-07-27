@@ -78,6 +78,9 @@ ship as a dedicated deployment per customer.
 
 ### Observability & ops
 
+For HR: [what the numbers mean](backend/docs/HR_METRICS.md) and
+[which screen calls which API](backend/docs/SCREEN_API_MAP.md).
+
 - `/healthz` (liveness) and `/readyz` (DB / Redis / Azure OpenAI checks).
 - `/metrics` (HR/admin only) — counters and latency for the sentiment pipeline
   (`sentiment_pipeline_processed_total`, `sentiment_pipeline_failures_total` by

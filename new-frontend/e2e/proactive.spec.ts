@@ -115,33 +115,22 @@ test("employee books an HR appointment by chatting", async ({ page }) => {
   /**
    * Send one turn and wait for its reply.
    *
-   * The composer drops sends under load: the button is disabled while
-   * `isSending || isTyping`, both transient, so it can flip disabled between
-   * Playwright's actionability check and the click actually dispatching — the
-   * click then hits a disabled button and the turn vanishes with no feedback.
-   * CI logged two POSTs for a six-turn conversation because of this.
-   *
-   * Enter goes through handleSend directly rather than the button's disabled
-   * attribute, and the send is retried once if our own bubble never rendered.
-   * This compensates for a real product-side race rather than proving it
-   * absent — see task.txt, "composer can silently drop a send".
+   * No retry: sends issued while a reply is in flight are queued by the
+   * composer now, so a turn cannot be dropped. Retrying here would enqueue a
+   * duplicate rather than recover anything. Asserting our own bubble still
+   * earns its place — it fails at the send rather than 45s later at a missing
+   * reply. See composer.spec.ts for the queue itself.
    */
   const say = async (message: string, expectReply: RegExp) => {
-    const ownBubble = page.getByText(message, { exact: false }).last();
-
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await expect(send).toBeEnabled({ timeout: 20_000 }).catch(() => undefined);
-      await box.fill(message);
-      await expect(box).toHaveValue(message, { timeout: 5_000 });
-      await box.press("Enter");
-      try {
-        await expect(ownBubble).toBeVisible({ timeout: 8_000 });
-        break;
-      } catch (error) {
-        if (attempt === 2) throw error;
-      }
-    }
-
+    await box.fill(message);
+    await expect(box).toHaveValue(message, { timeout: 5_000 });
+    // Enabled only with text present AND the conversation ready, so assert it
+    // after filling — it doubles as the readiness gate.
+    await expect(send).toBeEnabled({ timeout: 30_000 });
+    await box.press("Enter");
+    await expect(page.getByText(message, { exact: false }).last()).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(page.getByText(expectReply).last()).toBeVisible({ timeout: 45_000 });
   };
 
