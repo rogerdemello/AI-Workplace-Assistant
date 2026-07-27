@@ -17,6 +17,9 @@ from ..core.time import utcnow_naive
 from .realtime_bus import realtime_bus
 
 logger = logging.getLogger(__name__)
+
+#: Prefix on Message.intent identifying a proactively-delivered nudge.
+NUDGE_INTENT_PREFIX = "nudge:"
 from ..models.automation_action import AutomationAction
 from ..models.automation_rule import AutomationRule
 from ..models.conversation import Conversation, Message, MessageSender
@@ -270,6 +273,52 @@ class MarkProactiveService:
             logger.warning("Nudge AI gate failed open: %s", exc)
             return True, "ai_gate_error_failopen"
 
+    def notify_user(
+        self,
+        user_id: UUID,
+        message: str,
+        nudge_type: str = "hr_update",
+        action_url: Optional[str] = None,
+    ) -> None:
+        """Send an employee a message from Mark: durable in chat, live over SSE.
+
+        Public entry point for callers outside the proactive scheduler (e.g. HR
+        actioning a request) that need to close the loop with an employee.
+        Adds to the session; the caller owns the commit.
+        """
+        self._publish_user_nudge(user_id, message, nudge_type, action_url=action_url)
+
+    def _persist_nudge_message(self, user_id: UUID, message: str, nudge_type: str) -> None:
+        """Write the nudge into the user's chat history so it survives being offline.
+
+        SSE only reaches a chat that is currently open. The employees these
+        nudges target most — the quiet ones — are precisely the people without
+        the app open, and a one-time reminder is closed out after firing. Without
+        a durable copy the check-in is published to nobody and never retried.
+        The message is added to the session; callers own the commit.
+        """
+        conversation = (
+            self.db.query(Conversation)
+            .filter(Conversation.user_id == user_id)
+            .order_by(Conversation.started_at.desc())
+            .first()
+        )
+        if conversation is None:
+            conversation = Conversation(user_id=user_id)
+            self.db.add(conversation)
+            self.db.flush()
+
+        self.db.add(
+            Message(
+                conversation_id=conversation.id,
+                sender=MessageSender.bot,
+                message_text=message,
+                # NUDGE_INTENT_PREFIX marks these as proactively-sent so the chat
+                # client can pull the ones it missed while the user was away.
+                intent=f"{NUDGE_INTENT_PREFIX}{nudge_type}",
+            )
+        )
+
     def _publish_user_nudge(
         self,
         user_id: UUID,
@@ -277,11 +326,16 @@ class MarkProactiveService:
         nudge_type: str,
         action_url: Optional[str] = None,
     ) -> None:
-        """Best-effort live delivery of a nudge to the user's open chat (SSE).
+        """Deliver a nudge: persisted to chat history, plus live SSE if listening.
 
         ``action_url`` (optional) lets the client render a CTA button, e.g. a
         deep link to a lifecycle survey.
         """
+        try:
+            self._persist_nudge_message(user_id, message, nudge_type)
+        except Exception:
+            logger.warning("Failed to persist nudge for user %s", user_id, exc_info=True)
+
         payload: Dict[str, Any] = {
             "user_id": str(user_id),
             "message": message,

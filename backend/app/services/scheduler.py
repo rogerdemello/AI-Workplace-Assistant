@@ -416,7 +416,7 @@ def check_silent_users() -> dict:
                         schedule_kind="one_time",
                         run_at=now,
                         timezone="UTC",
-                        status="cancelled",
+                        status="active",
                         next_trigger_at=now,
                     )
                 )
@@ -589,7 +589,7 @@ def check_pto_nudges() -> dict:
                     schedule_kind="one_time",
                     run_at=now,
                     timezone="UTC",
-                    status="cancelled",
+                    status="active",
                     next_trigger_at=now,
                 )
             )
@@ -727,7 +727,7 @@ def check_meeting_fatigue() -> dict:
                     schedule_kind="one_time",
                     run_at=now,
                     timezone="UTC",
-                    status="cancelled",
+                    status="active",
                     next_trigger_at=now,
                 )
             )
@@ -827,7 +827,7 @@ def check_wellness_nudges() -> dict:
                     schedule_kind="one_time",
                     run_at=now,
                     timezone="UTC",
-                    status="cancelled",
+                    status="active",
                     next_trigger_at=now,
                 )
             )
