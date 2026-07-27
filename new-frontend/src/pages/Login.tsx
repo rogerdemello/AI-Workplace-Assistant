@@ -1,18 +1,60 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Sparkles, ArrowRight } from "lucide-react";
+import { Sparkles, ArrowRight, KeyRound } from "lucide-react";
 import { getDefaultRouteForRole, useAuth } from "@/contexts/AuthContext";
+import { apiBaseUrl } from "@/lib/api/client";
+
+interface SsoProvider {
+  id: string;
+  name: string;
+}
 
 export default function Login() {
   const nav = useNavigate();
   const location = useLocation();
-  const { loginWithEmail } = useAuth();
+  const { loginWithEmail, loginWithToken } = useAuth();
   const [email, setEmail] = useState("emp1@mark.ai");
   const [password, setPassword] = useState("password123");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ssoProviders, setSsoProviders] = useState<SsoProvider[]>([]);
 
   const redirectPath = (location.state as { from?: string } | null)?.from;
+
+  // Complete an SSO round-trip: the backend redirects back here with ?sso_token=…
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ssoToken = params.get("sso_token");
+    if (!ssoToken) return;
+    setBusy(true);
+    void loginWithToken(ssoToken)
+      .then((session) => {
+        // Strip the token from the URL regardless of outcome.
+        window.history.replaceState({}, "", window.location.pathname);
+        if (session) {
+          nav(redirectPath || getDefaultRouteForRole(session.role), { replace: true });
+        } else {
+          setLoginError("Single sign-on failed. Please try again or use email.");
+        }
+      })
+      .finally(() => setBusy(false));
+  }, [loginWithToken, nav, redirectPath]);
+
+  // Probe for configured SSO providers (button is hidden when none).
+  useEffect(() => {
+    let active = true;
+    fetch(`${apiBaseUrl()}/api/v1/sso/providers`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { providers?: SsoProvider[]; enabled?: boolean } | null) => {
+        if (active && data?.enabled && Array.isArray(data.providers)) {
+          setSsoProviders(data.providers);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -129,6 +171,20 @@ export default function Login() {
               <Sparkles className="size-4 text-accent" /> HR (hr1)
             </button>
           </div>
+
+          {ssoProviders.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {ssoProviders.map((provider) => (
+                <a
+                  key={provider.id}
+                  href={`${apiBaseUrl()}/api/v1/sso/${provider.id}/login`}
+                  className="h-11 rounded-lg bg-card border border-border text-sm flex items-center justify-center gap-2 hover:border-foreground/30 transition-colors"
+                >
+                  <KeyRound className="size-4 text-accent" /> Continue with {provider.name}
+                </a>
+              ))}
+            </div>
+          )}
 
           <p className="mt-8 text-xs text-muted-foreground text-center">
             By continuing you agree to MARK's <a href="#" className="underline">terms</a> and <a href="#" className="underline">privacy policy</a>.
