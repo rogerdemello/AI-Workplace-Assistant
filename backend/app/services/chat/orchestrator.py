@@ -451,6 +451,9 @@ class ConversationOrchestrator:
             flow_name,
             message,
             current_data=contract.get("data"),
+            # Which slot the flow last asked for — free-text answers are only
+            # accepted for the question actually on the table.
+            last_question=self.service.flow_context.get("last_question"),
         )
         filled = fill_slots(
             self.flow_manager,

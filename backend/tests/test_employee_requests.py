@@ -116,6 +116,28 @@ def test_document_request_flow_creates_row(chat, db, test_user):
     assert "hr" in final["response"].lower() or "requested" in final["response"].lower()
 
 
+def test_opening_phrase_is_not_captured_as_the_topic(chat, db, test_user):
+    """The phrase that starts a flow must not answer its first question.
+
+    Otherwise HR reads "1:1 with HR - i want to book an appointment with hr"
+    instead of why the employee actually wants to talk.
+    """
+    first = chat.say("I want to book an appointment with HR")
+    assert "talk about" in first["response"].lower(), first["response"]
+    assert first["flow_metadata"]["collected_fields"] == []
+
+    # Finish the flow so the stored topic can be inspected.
+    chat.say("My workload has been unmanageable since the reorg")
+    chat.say(_future(3))
+    chat.say("11:00")
+    chat.say("video")
+    chat.say("yes")
+
+    row = db.query(EmployeeRequest).filter(EmployeeRequest.user_id == test_user.id).one()
+    assert row.details["topic"] == "My workload has been unmanageable since the reorg"
+    assert "unmanageable" in row.title
+
+
 def test_appointment_flow_sets_scheduled_at(chat, db, test_user):
     day = _future(3)
     chat.say("I want to book an appointment with HR")

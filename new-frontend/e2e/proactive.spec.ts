@@ -89,27 +89,26 @@ test("employee books an HR appointment by chatting", async ({ page }) => {
   await expect(box).toBeVisible({ timeout: 15000 });
   const send = page.getByRole("button", { name: "Send" });
 
-  const say = async (message: string) => {
-    // Send enables only when the conversation is ready and no turn is in
-    // flight, so waiting on it is what actually gates the previous reply.
+  // Wait for the reply this turn should produce before sending the next one.
+  // The input clears as soon as a message is accepted, so gating on that alone
+  // lets a fast backend receive the next turn before the flow has advanced —
+  // which is exactly how this raced in CI but not on a slower local machine.
+  const say = async (message: string, expectReply: RegExp) => {
     await box.fill(message);
     await expect(send).toBeEnabled({ timeout: 60_000 });
     await send.click();
-    // The box clears once the turn is accepted — the signal that it went out.
-    await expect(box).toHaveValue("", { timeout: 30_000 });
+    await expect(page.getByText(expectReply).last()).toBeVisible({ timeout: 60_000 });
   };
 
   const day = new Date();
   day.setDate(day.getDate() + 3);
 
-  await say("I want to book an appointment with HR");
-  await say("I would like to discuss my career growth");
-  await say(day.toISOString().slice(0, 10));
-  await say("3pm");
-  await say("video");
-  await say("yes");
-
-  await expect(page.getByText(/Booked|HR will confirm/i)).toBeVisible({ timeout: 25000 });
+  await say("I want to book an appointment with HR", /what would you like to talk about/i);
+  await say("I would like to discuss my career growth", /which day works for you/i);
+  await say(day.toISOString().slice(0, 10), /what time suits you/i);
+  await say("3pm", /in person, over a call, or a video/i);
+  await say("video", /send this to HR/i);
+  await say("yes", /Booked|HR will confirm/i);
 });
 
 test("HR requests page renders and lists chat-raised requests", async ({ page }) => {

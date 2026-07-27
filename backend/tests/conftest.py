@@ -70,10 +70,18 @@ def setup_test_db():
     """Use the same SQLAlchemy engine as the app so metadata and sessions stay aligned."""
     from app.database import Base, engine
     import app.models  # noqa: F401 — register all models on Base.metadata
+
+    # File-backed SQLite no longer uses StaticPool (see app/database.py — it
+    # serialised every request onto one connection in production). Pooled
+    # connections keep the file locked, and on Windows that is strict enough to
+    # make drop_all a no-op, so rows leak between tests and the next fixture
+    # trips a UNIQUE constraint. Disposing first releases them on every OS.
+    engine.dispose()
     try:
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
         yield
+        engine.dispose()
         Base.metadata.drop_all(bind=engine)
     except Exception:
         pytest.skip("Database tables creation failed")
