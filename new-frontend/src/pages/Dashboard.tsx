@@ -2,9 +2,12 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { Sparkline, BarMini } from "@/components/charts";
 import { EmotionMixTrendCard } from "@/components/analytics/EmotionMixTrendCard";
 import { AlertsPanelCard } from "@/components/dashboard/AlertsPanelCard";
+import { DownloadReportButton } from "@/components/dashboard/DownloadReportButton";
 import { AtRiskEmployeesCard } from "@/components/dashboard/AtRiskEmployeesCard";
 import { DepartmentHeatmapCard } from "@/components/dashboard/DepartmentHeatmapCard";
 import { KpiStatsRow } from "@/components/dashboard/KpiStatsRow";
+import { PatternsCard } from "@/components/dashboard/PatternsCard";
+import { PulseSummaryCard } from "@/components/dashboard/PulseSummaryCard";
 import { SentimentTrendsCard } from "@/components/dashboard/SentimentTrendsCard";
 import { getDashboardData, getRecentActivity } from "@/lib/services";
 import type { ActivityItem } from "@/lib/services";
@@ -82,7 +85,10 @@ export default function Dashboard() {
       <div className="px-6 lg:px-10 py-8 max-w-7xl space-y-8">
         {/* Headline */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
-          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">This week</div>
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">This week</div>
+            <DownloadReportButton />
+          </div>
           <h2 className="mt-2 font-display text-4xl tracking-tight max-w-3xl text-balance">Team pulse from live analytics.</h2>
           <p className="mt-3 text-muted-foreground max-w-2xl">
             {data?.aiSummary?.trim()
@@ -318,6 +324,11 @@ export default function Dashboard() {
         <div className="grid lg:grid-cols-2 gap-4">
           <AtRiskEmployeesCard limit={10} />
           <AlertsPanelCard limit={30} />
+        </div>
+
+        <div className="grid lg:grid-cols-2 gap-4">
+          <PatternsCard days={14} />
+          <PulseSummaryCard days={30} />
         </div>
 
         <EmotionMixTrendCard

@@ -26,7 +26,10 @@ class BudgetTracker:
         self.warning_threshold = 0.8  # Warn at 80% usage
         
         try:
-            client = redis.from_url(redis_url, decode_responses=True)
+            client = redis.from_url(
+                redis_url, decode_responses=True,
+                socket_connect_timeout=0.3, socket_timeout=0.3,
+            )
             if client:
                 client.ping()
                 self.redis_client = client

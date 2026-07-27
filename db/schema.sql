@@ -659,6 +659,37 @@ CREATE TABLE IF NOT EXISTS reminder_schedules (
     )
 );
 
+CREATE TABLE IF NOT EXISTS employee_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    request_type VARCHAR(20) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    title VARCHAR(255) NOT NULL,
+    details JSONB NOT NULL DEFAULT '{}'::jsonb,
+    scheduled_at TIMESTAMPTZ,
+    start_date DATE,
+    end_date DATE,
+    amount NUMERIC(12, 2),
+    handled_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    handled_at TIMESTAMPTZ,
+    hr_note TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_employee_requests_request_type
+        CHECK (request_type IN ('appointment', 'expense', 'shift_change', 'document')),
+    CONSTRAINT ck_employee_requests_status
+        CHECK (status IN ('pending', 'scheduled', 'approved', 'rejected', 'cancelled', 'completed'))
+);
+
+CREATE INDEX ix_employee_requests_user_id ON employee_requests(user_id);
+CREATE INDEX ix_employee_requests_request_type ON employee_requests(request_type);
+CREATE INDEX ix_employee_requests_status ON employee_requests(status);
+CREATE INDEX ix_employee_requests_created_at ON employee_requests(created_at);
+CREATE INDEX ix_employee_requests_scheduled_at ON employee_requests(scheduled_at);
+CREATE INDEX ix_employee_requests_handled_by ON employee_requests(handled_by);
+-- HR's default view is "pending work, newest first".
+CREATE INDEX ix_employee_requests_status_created_at ON employee_requests(status, created_at);
+
 CREATE TABLE IF NOT EXISTS wellbeing_signals (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -995,6 +1026,10 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TRIGGER trg_webhooks_updated_at
 BEFORE UPDATE ON webhooks
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_employee_requests_updated_at
+BEFORE UPDATE ON employee_requests
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 COMMIT;

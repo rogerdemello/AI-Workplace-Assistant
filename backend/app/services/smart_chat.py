@@ -19,6 +19,7 @@ from difflib import SequenceMatcher
 from datetime import datetime, date, timedelta, timezone
 
 from ..models.leave_request import LeaveRequest, LeaveStatus, LeaveType
+from ..models.employee_request import EmployeeRequest, RequestStatus, RequestType
 from ..models.ticket import Ticket, TicketPriority, TicketStatus
 from ..services.ticket import TicketService
 
@@ -251,6 +252,38 @@ class SmartChatService:
         "how much leave": "leave_balance",
         "remaining leave": "leave_balance",
         "leave quota": "leave_balance",
+        # Appointment with HR. Kept narrow on purpose — the productivity agent
+        # owns generic room booking and "schedule a meeting with <person>", so
+        # only "appointment" or an explicit HR counterpart routes here.
+        "book an appointment": "appointment_request",
+        "book appointment": "appointment_request",
+        "schedule an appointment": "appointment_request",
+        "appointment with hr": "appointment_request",
+        "1:1 with hr": "appointment_request",
+        "meeting with hr": "appointment_request",
+        "meet with hr": "appointment_request",
+        # Expense / reimbursement
+        "reimbursement": "expense_claim",
+        "reimburse me": "expense_claim",
+        "expense claim": "expense_claim",
+        "claim my expenses": "expense_claim",
+        "file an expense": "expense_claim",
+        "submit an expense": "expense_claim",
+        # Shift change / remote work — deliberately NOT a bare "work from home",
+        # which is also a valid answer to the leave flow's leave_type question.
+        "shift change": "shift_change_request",
+        "change my shift": "shift_change_request",
+        "swap my shift": "shift_change_request",
+        "switch my shift": "shift_change_request",
+        "work remotely": "shift_change_request",
+        # HR documents
+        "payslip": "document_request",
+        "pay slip": "document_request",
+        "salary slip": "document_request",
+        "form 16": "document_request",
+        "employment letter": "document_request",
+        "experience letter": "document_request",
+        "salary certificate": "document_request",
         # General conversation / context breakers (reset flow)
         "tell me a joke": "general_query",
         "joke": "general_query",
@@ -262,6 +295,18 @@ class SmartChatService:
         "hi": "general_query",
         "hello": "general_query",
         "hey": "general_query",
+        # Specific appreciation phrases — MUST come before the bare "thanks" /
+        # "thank you" entries below so e.g. "thanks to Priya" routes to
+        # appreciation, not the catch-all general_query.
+        "thanks to": "appreciation",
+        "thank you to": "appreciation",
+        "shoutout to": "appreciation",
+        "shout out to": "appreciation",
+        "shout-out to": "appreciation",
+        "kudos to": "appreciation",
+        "credit to": "appreciation",
+        "credit goes to": "appreciation",
+        "hat tip to": "appreciation",
         "thanks": "general_query",
         "thank you": "general_query",
         "bye": "general_query",
@@ -394,6 +439,16 @@ class SmartChatService:
         if classified_intent in {"ticket_create", "complaint"}:
             if any(keyword in msg for keyword in self.LEAVE_BALANCE_KEYWORDS):
                 return "leave_balance"
+
+        # "work from home" is both a leave type and a shift-change request. While the
+        # leave flow is asking for the type, a bare answer is answering that question.
+        if (
+            self.current_flow == "leave_request"
+            and classified_intent == "shift_change_request"
+            and re.fullmatch(r"(work\s+from\s+home|wfh|remote)\W*", msg)
+        ):
+            return "leave_request"
+
         return classified_intent
     
     def _is_greeting(self, message: str) -> bool:
@@ -770,6 +825,105 @@ class SmartChatService:
             f"{start} to {end} submitted. Your manager will review it soon. 🗓️{empathy}"
         )
     
+    #: flow name → (request type, title template, closing line)
+    _REQUEST_FLOW_SPEC = {
+        "appointment_request": (
+            RequestType.appointment,
+            "1:1 with HR",
+            "Booked — HR will confirm the slot with you shortly. 📅",
+        ),
+        "expense_claim": (
+            RequestType.expense,
+            "Expense claim",
+            "Submitted — Finance will pick it up from here. 🧾",
+        ),
+        "shift_change_request": (
+            RequestType.shift_change,
+            "Shift change request",
+            "Sent — your manager will review it and HR has a copy. 🔄",
+        ),
+        "document_request": (
+            RequestType.document,
+            "Document request",
+            "Requested — HR will send it across once it's ready. 📄",
+        ),
+    }
+
+    def _complete_employee_request(self, flow_name: str, data: Dict) -> str:
+        """Persist a confirmed appointment / expense / shift-change / document request."""
+        spec = self._REQUEST_FLOW_SPEC.get(flow_name)
+        if not spec:
+            logger.warning(f"Unknown request flow: {flow_name}")
+            return "Something went wrong on my side. Could you try that again?"
+
+        request_type, title_fallback, closing = spec
+
+        missing = self.orchestrator.flow_manager.missing_fields(flow_name, data)
+        if missing:
+            return "Almost there — I still need a couple of details before I can submit this."
+
+        from .chat.flow_manager import coerce_amount, coerce_time
+
+        request = EmployeeRequest(
+            user_id=self.user_id,
+            request_type=request_type,
+            status=RequestStatus.pending,
+            title=self._build_request_title(flow_name, data, title_fallback),
+            details={k: v for k, v in data.items() if v is not None},
+        )
+
+        if request_type == RequestType.appointment:
+            preferred_date = self._coerce_date(data.get("preferred_date"))
+            preferred_time = coerce_time(data.get("preferred_time"))
+            if preferred_date and preferred_time:
+                hour, minute = (int(p) for p in preferred_time.split(":"))
+                request.scheduled_at = datetime.combine(
+                    preferred_date, datetime.min.time()
+                ).replace(hour=hour, minute=minute)
+        elif request_type == RequestType.expense:
+            request.amount = coerce_amount(data.get("amount"))
+            request.start_date = self._coerce_date(data.get("expense_date"))
+        elif request_type == RequestType.shift_change:
+            request.start_date = self._coerce_date(data.get("start_date"))
+            request.end_date = self._coerce_date(data.get("end_date"))
+
+        self.db.add(request)
+        try:
+            self.db.commit()
+        except Exception as exc:
+            self.db.rollback()
+            logger.error(f"Employee request creation failed ({flow_name}): {exc}")
+            return "Something went wrong saving that request. Please try again."
+
+        self._reset_flow()
+        return f"{closing} {self._request_summary(flow_name, data)}".strip()
+
+    def _build_request_title(self, flow_name: str, data: Dict, fallback: str) -> str:
+        if flow_name == "appointment_request":
+            topic = (data.get("topic") or "").strip()
+            return f"1:1 with HR — {topic}"[:255] if topic else fallback
+        if flow_name == "expense_claim":
+            expense_type = (data.get("expense_type") or "").strip()
+            return f"{expense_type.title()} expense claim"[:255] if expense_type else fallback
+        if flow_name == "shift_change_request":
+            change_type = (data.get("change_type") or "").strip()
+            return f"{change_type.title()} request"[:255] if change_type else fallback
+        if flow_name == "document_request":
+            document_type = (data.get("document_type") or "").strip()
+            return f"{document_type.title()} request"[:255] if document_type else fallback
+        return fallback
+
+    def _request_summary(self, flow_name: str, data: Dict) -> str:
+        if flow_name == "appointment_request":
+            return f"({data.get('preferred_date')} at {data.get('preferred_time')}, {data.get('mode')})"
+        if flow_name == "expense_claim":
+            return f"({data.get('expense_type')}, {data.get('amount')} on {data.get('expense_date')})"
+        if flow_name == "shift_change_request":
+            return f"({data.get('start_date')} to {data.get('end_date')})"
+        if flow_name == "document_request":
+            return f"({data.get('document_type')})"
+        return ""
+
     def _handle_policy_query(self, message: str) -> str:
         """Handle policy query using RAG."""
         if not get_feature_flags().enable_rag:
@@ -837,6 +991,92 @@ class SmartChatService:
     def _handle_benefits_query(self, message: str) -> str:
         """Handle benefits questions using RAG."""
         return self._handle_policy_query(message)
+
+    # Patterns to extract the colleague being thanked. Lead-in keywords are
+    # case-insensitive (Thanks / THANKS / thanks all match); the captured name
+    # still expects capital-cased proper-name form so we don't grab connectives.
+    _APPRECIATION_TARGET_PATTERNS = (
+        r"(?i:\bthanks?\s+to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bthank\s+you)(?i:\s+to)?\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bappreciat\w+\s+(?:goes\s+)?(?:to|for))\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bshout[-\s]?out\s+to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bkudos\s+to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bcredit\s+(?:goes\s+)?to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"(?i:\bhat\s+tip\s+to)\s+([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)",
+        r"\b([A-Z][A-Za-z]{1,30}(?:\s+[A-Z][A-Za-z]{1,30})?)\s+(?i:(?:really\s+|absolutely\s+)?(?:helped|saved|covered|carried|crushed\s+it))",
+    )
+
+    def _extract_appreciation_target(self, message: str) -> Optional[str]:
+        for pattern in self._APPRECIATION_TARGET_PATTERNS:
+            m = re.search(pattern, message)
+            if m:
+                return m.group(1).strip()
+        return None
+
+    def _find_user_by_name_or_email(self, query: str) -> "Optional[User]":
+        from ..models.user import User as _User
+        q = (query or "").strip()
+        if not q:
+            return None
+        if "@" in q:
+            return self.db.query(_User).filter(_User.email == q.lower()).first()
+        # Name match: full-text-ish ILIKE. Prefer exact name first.
+        exact = self.db.query(_User).filter(_User.name.ilike(q)).first()
+        if exact:
+            return exact
+        return self.db.query(_User).filter(_User.name.ilike(f"%{q}%")).first()
+
+    def _handle_appreciation(self, message: str) -> str:
+        """Detect a gratitude-toward-a-colleague message and send a real note.
+
+        Pending target is stashed in flow_context so a follow-up like "Priya"
+        completes the send without retyping the whole phrase.
+        """
+        from ..models.appreciation_note import AppreciationNote
+
+        # If we asked "who?" last turn, the new message IS the target.
+        pending = self.flow_context.pop("_pending_appreciation", None) if self.flow_context else None
+        target_name = None
+        if pending:
+            target_name = message.strip().rstrip("!.?")
+        else:
+            target_name = self._extract_appreciation_target(message)
+
+        if not target_name:
+            self.flow_context["_pending_appreciation"] = True
+            return "Love that. Who should I send the appreciation to? Their name or email works."
+
+        target_user = self._find_user_by_name_or_email(target_name)
+        if not target_user:
+            self.flow_context["_pending_appreciation"] = True
+            return (
+                f"I couldn't find someone named '{target_name}' in the directory. "
+                "Could you share their email so I can route the note?"
+            )
+        if target_user.id == self.user_id:
+            return "Self-appreciation noted 😊 — but a note is meant for someone else. Who actually helped you out?"
+
+        try:
+            note_text = message.strip()[:500] or f"Appreciation from a teammate."
+            self.db.add(
+                AppreciationNote(
+                    from_user_id=self.user_id,
+                    to_user_id=target_user.id,
+                    message=note_text,
+                    is_anonymous=False,
+                )
+            )
+            self.db.commit()
+        except Exception as exc:
+            logger.warning("Appreciation note write failed: %s", exc, exc_info=True)
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            return "I tried to send that note but hit a snag — give me a moment and try again."
+
+        first = (target_user.name or "").split()[0] if target_user.name else "them"
+        return f"Sent — {first} will see your appreciation note 🙌"
 
     def _handle_escalate_ticket(self) -> str:
         """Find the user's most recent open ticket and escalate it."""
@@ -1012,6 +1252,36 @@ class SmartChatService:
             return "mild"
         return None
     
+    def _recent_messages_for_llm(self, limit: int = 8) -> List[Dict[str, str]]:
+        """Recent persisted turns in chronological order as LLM message dicts.
+
+        Without this MARK forgets what was just said — "yeah" after empathy reads
+        as a fresh greeting because only the current message reaches the model.
+        """
+        if not self.conversation_id:
+            return []
+        try:
+            from ..models.conversation import Message, MessageSender as _MS
+            from sqlalchemy import desc as _desc
+            rows = (
+                self.db.query(Message)
+                .filter(Message.conversation_id == self.conversation_id)
+                .order_by(_desc(Message.created_at))
+                .limit(max(1, int(limit)))
+                .all()
+            )
+            history: List[Dict[str, str]] = []
+            for m in reversed(rows):  # oldest first for the model
+                text = (m.message_text or "").strip()
+                if not text:
+                    continue
+                role = "user" if m.sender == _MS.user else "assistant"
+                history.append({"role": role, "content": text})
+            return history
+        except Exception as exc:
+            logger.warning(f"Failed to load conversation history for LLM: {exc}")
+            return []
+
     def _handle_general_query(self, message: str, sentiment: str, mode: str) -> str:
         """Handle general queries using AI."""
         try:
@@ -1019,23 +1289,25 @@ class SmartChatService:
             user_name = self.user_context.get("user_name")
             recent_sentiment = self.user_context.get("current_mood")
             department = self.user_context.get("department")
-            
+
             system_prompt = build_context_aware_prompt(
                 user_name=user_name,
                 recent_sentiment=recent_sentiment,
                 department_context=department,
                 mode=mode,
             )
-            
+
+            history = self._recent_messages_for_llm(limit=8)
             response = self.ai_client.chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message}
+                    *history,
+                    {"role": "user", "content": message},
                 ],
                 temperature=0.4,
                 max_tokens=140
             )
-            
+
             return response["choices"][0]["message"]["content"]
             
         except Exception as e:
@@ -1056,13 +1328,16 @@ class SmartChatService:
             department_context=department,
             mode=mode,
         )
+        history = self._recent_messages_for_llm(limit=8)
         return self.ai_client.chat_completion_stream(
             messages=[
                 {"role": "system", "content": system_prompt},
+                *history,
                 {"role": "user", "content": message},
             ],
             temperature=0.4,
             max_tokens=140,
+            deployment=settings.AZURE_OPENAI_FAST_DEPLOYMENT or None,
         )
 
     def stream_non_flow_intent_tokens(self, intent: str, message: str, sentiment: str, mode: str):
@@ -1084,6 +1359,7 @@ class SmartChatService:
                 ],
                 temperature=0.3,
                 max_tokens=120,
+                deployment=settings.AZURE_OPENAI_FAST_DEPLOYMENT or None,
             )
 
         if intent_key == "email_draft":
@@ -1100,6 +1376,7 @@ class SmartChatService:
                 ],
                 temperature=0.35,
                 max_tokens=140,
+                deployment=settings.AZURE_OPENAI_FAST_DEPLOYMENT or None,
             )
 
         if intent_key in {"policy_query", "benefits_question"}:

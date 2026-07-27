@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { OffboardingClearanceCard } from "@/components/employee/OffboardingClearanceCard";
 import { getEmployeeTimeline, getTickets, getUserDetail } from "@/lib/services";
 import type { UserDetail } from "@/lib/services";
 import type { Ticket } from "@/lib/domain-types";
@@ -273,6 +274,8 @@ export default function EmployeeProfile() {
             </ul>
           </div>
         </div>
+
+        <OffboardingClearanceCard userId={emp.id} />
       </div>
 
       <EditProfileDialog

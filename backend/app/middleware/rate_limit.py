@@ -20,7 +20,10 @@ class RateLimiter:
         self._is_testing = os.getenv("TESTING", "0").lower() in ("1", "true", "yes")
         self.redis_client: RedisClient = None
         try:
-            client: Any = redis.from_url(redis_url, decode_responses=True)
+            client: Any = redis.from_url(
+                redis_url, decode_responses=True,
+                socket_connect_timeout=0.3, socket_timeout=0.3,
+            )
             if client:
                 client.ping()  # type: ignore[attr-defined]
                 self.redis_client = client

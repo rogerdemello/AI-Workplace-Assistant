@@ -14,6 +14,7 @@ import Employee from "./pages/Employee";
 import Dashboard from "./pages/Dashboard";
 import ChatPage from "./pages/ChatPage";
 import Tickets from "./pages/Tickets";
+import Requests from "./pages/Requests";
 import Employees from "./pages/Employees";
 import EmployeeProfile from "./pages/EmployeeProfile";
 import Manager from "./pages/Manager";
@@ -68,6 +69,14 @@ const App = () => (
                 element={
                   <ProtectedRoute>
                     <Tickets />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/requests"
+                element={
+                  <ProtectedRoute>
+                    <Requests />
                   </ProtectedRoute>
                 }
               />

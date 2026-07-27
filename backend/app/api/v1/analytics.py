@@ -472,3 +472,247 @@ def get_departments_heatmap(
     """Department × sentiment bucket counts for the HR dashboard heatmap."""
     rows = compute_department_heatmap(db)
     return {"departments": rows}
+
+
+@router.get("/patterns")
+def get_patterns(
+    days: int = Query(14, ge=3, le=90),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Cross-employee patterns + concrete HR recommendations.
+
+    Surfaces things you can't see from a single profile — recurring negative
+    emotions across multiple employees, department sentiment drops vs the prior
+    window, repeating complaint categories, and top at-risk individuals — each
+    paired with an actionable next step.
+    """
+    from ...services.pattern_detection import detect_patterns
+
+    return {"window_days": days, "patterns": detect_patterns(db, days=days)}
+
+
+@router.get("/pulse-summary")
+def get_pulse_summary(
+    days: int = Query(30, ge=1, le=180),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Aggregate pulse-question activity for HR.
+
+    Closes the loop: MARK asks a Pulse check on the first chat of the day, the
+    employee answers, sentiment is logged. This endpoint counts the questions
+    asked, finds the user reply that immediately followed each (within 60 min,
+    same conversation), and aggregates sentiment across those replies.
+    """
+    from collections import Counter
+    from datetime import timedelta as _td
+    from ...core.time import utcnow_naive
+    from ...models.conversation import Message, MessageSender
+    from ...models.sentiment_log import SentimentLog
+
+    cutoff = utcnow_naive() - _td(days=days)
+
+    # 1) Pulse questions asked in window (across all employees).
+    pulse_markers = (
+        db.query(Message.id, Message.conversation_id, Message.created_at)
+        .filter(Message.sender == MessageSender.bot)
+        .filter(Message.message_text.contains("Pulse check:"))
+        .filter(Message.created_at >= cutoff)
+        .all()
+    )
+    questions_asked = len(pulse_markers)
+
+    # 2) Reply message_ids: first user message in the same conversation within
+    #    60 minutes of each pulse question. One small query per marker — fine
+    #    at HR-pulse volume (tens/month).
+    reply_ids: list = []
+    for _mid, conv_id, asked_at in pulse_markers:
+        row = (
+            db.query(Message.id)
+            .filter(Message.conversation_id == conv_id)
+            .filter(Message.sender == MessageSender.user)
+            .filter(Message.created_at > asked_at)
+            .filter(Message.created_at <= asked_at + _td(minutes=60))
+            .order_by(Message.created_at.asc())
+            .first()
+        )
+        if row:
+            reply_ids.append(row[0])
+
+    replies_received = len(reply_ids)
+
+    # 3) Sentiment aggregate over those reply messages.
+    sentiment_rows = []
+    if reply_ids:
+        sentiment_rows = (
+            db.query(SentimentLog.label, SentimentLog.score, SentimentLog.emotion)
+            .filter(SentimentLog.message_id.in_(reply_ids))
+            .all()
+        )
+
+    pos = sum(1 for r in sentiment_rows if r.label == "positive")
+    neg = sum(1 for r in sentiment_rows if r.label == "negative")
+    neu = sum(1 for r in sentiment_rows if r.label == "neutral")
+    avg_score = (
+        int(sum(int(r.score or 0) for r in sentiment_rows) / len(sentiment_rows))
+        if sentiment_rows
+        else None
+    )
+    emotion_counts = Counter(
+        (r.emotion or "").strip()
+        for r in sentiment_rows
+        if r.emotion and r.emotion.strip() and r.emotion.strip() != "neutral"
+    )
+    top_emotion = emotion_counts.most_common(1)[0][0] if emotion_counts else None
+    response_rate = round(replies_received / questions_asked, 2) if questions_asked else 0.0
+
+    return {
+        "window_days": days,
+        "questions_asked": questions_asked,
+        "replies_received": replies_received,
+        "response_rate": response_rate,
+        "sentiment": {
+            "positive": pos,
+            "neutral": neu,
+            "negative": neg,
+            "average_score_0_100": avg_score,
+        },
+        "top_emotion": top_emotion,
+    }
+
+
+@router.get("/report")
+def get_hr_report(
+    period: str = Query("weekly", pattern="^(weekly|monthly)$"),
+    db: Session = Depends(get_db),
+    _hr=Depends(require_roles(["hr", "admin"])),
+):
+    """Downloadable HR snapshot — KPIs, patterns, pulse stats, department breakdown.
+
+    Returns a single CSV so HR can archive or email it without re-screenshotting
+    the dashboard. `period` toggles the window (weekly = 7d, monthly = 30d).
+    """
+    import csv
+    import io
+    from collections import Counter
+    from datetime import timedelta as _td
+    from fastapi.responses import StreamingResponse
+    from sqlalchemy import distinct as _distinct, func as _func
+    from ...core.time import utcnow_naive
+    from ...models.conversation import Message, MessageSender
+    from ...models.department import Department
+    from ...models.sentiment_log import SentimentLog
+    from ...models.employee_score import EmployeeScore
+    from ...models.ticket import Ticket, TicketStatus
+    from ...models.hr_alert import HrAlert
+    from ...models.user import User, UserRole, UserStatus
+    from ...services.pattern_detection import detect_patterns
+
+    days = 7 if period == "weekly" else 30
+    now = utcnow_naive()
+    cutoff = now - _td(days=days)
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["section", "metric", "value"])
+
+    # Overview
+    active_employees = (
+        db.query(_func.count(User.id))
+        .filter(User.role == UserRole.employee, User.status == UserStatus.active)
+        .scalar()
+        or 0
+    )
+    avg_sentiment = (
+        db.query(_func.avg(EmployeeScore.sentiment_score)).scalar() or 0
+    )
+    avg_engagement = (
+        db.query(_func.avg(EmployeeScore.engagement_score)).scalar() or 0
+    )
+    avg_risk = db.query(_func.avg(EmployeeScore.risk_score)).scalar() or 0
+    open_tickets = (
+        db.query(_func.count(Ticket.id))
+        .filter(Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress, TicketStatus.escalated]))
+        .scalar()
+        or 0
+    )
+    unresolved_alerts = (
+        db.query(_func.count(HrAlert.id))
+        .filter(HrAlert.acknowledged.is_(False))
+        .scalar()
+        or 0
+    )
+    at_risk_count = (
+        db.query(_func.count(EmployeeScore.employee_id))
+        .filter(EmployeeScore.risk_score >= 60)
+        .scalar()
+        or 0
+    )
+    w.writerow(["overview", "period", period])
+    w.writerow(["overview", "window_days", days])
+    w.writerow(["overview", "active_employees", int(active_employees)])
+    w.writerow(["overview", "avg_sentiment_score", int(avg_sentiment)])
+    w.writerow(["overview", "avg_engagement_score", int(avg_engagement)])
+    w.writerow(["overview", "avg_risk_score", int(avg_risk)])
+    w.writerow(["overview", "open_tickets", int(open_tickets)])
+    w.writerow(["overview", "unresolved_alerts", int(unresolved_alerts)])
+    w.writerow(["overview", "at_risk_employees", int(at_risk_count)])
+
+    # Sentiment by department
+    dept_rows = (
+        db.query(User.department_id, _func.avg(SentimentLog.score))
+        .join(User, User.id == SentimentLog.employee_id)
+        .filter(SentimentLog.created_at >= cutoff)
+        .filter(User.department_id.isnot(None))
+        .group_by(User.department_id)
+        .all()
+    )
+    dept_names = {d.id: d.name for d in db.query(Department).all()}
+    for dept_id, avg in dept_rows:
+        w.writerow(
+            ["sentiment_by_department", dept_names.get(dept_id, "Unknown"), int(avg or 0)]
+        )
+
+    # Emotion distribution
+    emotion_counts = Counter()
+    for emo, in (
+        db.query(SentimentLog.emotion)
+        .filter(SentimentLog.created_at >= cutoff)
+        .filter(SentimentLog.emotion.isnot(None))
+        .filter(SentimentLog.emotion != "")
+        .all()
+    ):
+        emotion_counts[emo or "neutral"] += 1
+    for emo, n in emotion_counts.most_common(6):
+        w.writerow(["emotion_count", emo, int(n)])
+
+    # Pulse activity
+    pulse_questions = (
+        db.query(_func.count(Message.id))
+        .filter(Message.sender == MessageSender.bot)
+        .filter(Message.message_text.contains("Pulse check:"))
+        .filter(Message.created_at >= cutoff)
+        .scalar()
+        or 0
+    )
+    w.writerow(["pulse", "questions_asked", int(pulse_questions)])
+
+    # Patterns + recommendations
+    for p in detect_patterns(db, days=days):
+        w.writerow(
+            [
+                "pattern",
+                f"{p['type']}:{p['severity']}",
+                p["label"],
+            ]
+        )
+        w.writerow(["recommendation", p["type"], p["recommendation"]])
+
+    csv_text = buf.getvalue()
+    filename = f"mark-hr-{period}-{now.strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        iter([csv_text]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

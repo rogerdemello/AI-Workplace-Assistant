@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     AZURE_OPENAI_API_KEY: str = "mock-key"
     AZURE_OPENAI_ENDPOINT: str = "https://mock.openai.azure.com"
     AZURE_OPENAI_DEPLOYMENT: str = "gpt-4"
+    # Optional faster/cheaper deployment (e.g. gpt-4o-mini) used for streaming
+    # general-chat replies to lower time-to-first-token. Falls back to
+    # AZURE_OPENAI_DEPLOYMENT when empty.
+    AZURE_OPENAI_FAST_DEPLOYMENT: str = ""
     AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
     SECRET_KEY: str = "your-secret-key-here"
     ALGORITHM: str = "HS256"
@@ -29,7 +33,10 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_USE_TLS: bool = True
     ENABLE_WHATSAPP_CHANNEL: bool = False
-    ENABLE_LIFE_ASSISTANT: bool = False
+    # On by default — the agent only intercepts explicit weather / restaurant /
+    # cafeteria keywords and falls back cleanly when no provider key is set
+    # (weather works out of the box via open-meteo, no key required).
+    ENABLE_LIFE_ASSISTANT: bool = True
     ENABLE_PRODUCTIVITY_AGENT: bool = False
     ENABLE_MULTI_AGENT_ORCHESTRATION: bool = False
     WHATSAPP_VERIFY_TOKEN: str = ""
@@ -42,6 +49,17 @@ class Settings(BaseSettings):
     # When true, validates X-Twilio-Signature on inbound /whatsapp/webhook hits.
     # Set false for local ngrok testing where URL rewriting breaks the HMAC.
     WHATSAPP_VALIDATE_SIGNATURE: bool = True
+
+    # Microsoft Teams — Incoming Webhook for HR fan-out (alerts, patterns, etc.).
+    # Create a webhook on the target channel ("Connectors" → "Incoming Webhook"),
+    # paste the URL here, flip the flag, and posts go to that channel. Empty =
+    # no-op (every Teams call returns False cleanly, the alert path is untouched).
+    ENABLE_TEAMS_NOTIFICATIONS: bool = False
+    TEAMS_WEBHOOK_URL: str = ""
+    # Used in the "Open in MARK" deep link on the cards; falls back to no link
+    # when empty.
+    TEAMS_DASHBOARD_URL: str = ""
+
     LIFE_WEATHER_BASE_URL: str = "https://api.open-meteo.com/v1/forecast"
     LIFE_GEOCODE_BASE_URL: str = "https://geocoding-api.open-meteo.com/v1/search"
     LIFE_PLACES_API_URL: str = ""
@@ -61,6 +79,15 @@ class Settings(BaseSettings):
     SUSTAINED_NEGATIVE_MIN_MESSAGES: int = 3
     SUSTAINED_RISK_ALERT_COOLDOWN_HOURS: int = 24
     SUSTAINED_RISK_ALERTS_ENABLED: bool = True
+    # Single-turn alerting (see sentiment_alerts.py). Scores are 0–100.
+    # Alert when one message scores at or below this.
+    SENTIMENT_ALERT_THRESHOLD: int = 30
+    # Alert when conversation-level risk reaches or exceeds this.
+    RISK_ALERT_THRESHOLD: int = 70
+    # Minimum gap between alerts for the same employee, so HR isn't spammed.
+    ALERT_COOLDOWN_MINUTES: int = 30
+    # Comma-separated emotions that raise an alert on their own.
+    EMOTION_ALERT_TRIGGERS: str = "burnout,exhaustion,betrayal,injustice,panic"
     # Hybrid sentiment: Azure chat JSON classifier first, lexicon fallback (see sentiment_llm.py).
     SENTIMENT_HYBRID_ENABLED: bool = True
     SENTIMENT_LLM_MAX_CHARS: int = 2000

@@ -14,9 +14,17 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, func
 import json
+import time
 
 from ..models.conversation import Message, SentimentLabel
 from ..models.user import User
+
+# get_user_context runs on every chat turn and fires ~6 queries (user, mood x2,
+# topics, department, last-interaction). Against a remote DB that's seconds per
+# turn. The data changes slowly, so cache it briefly per user (process-local) —
+# turns 2+ of a conversation/flow then skip those queries entirely.
+_USER_CONTEXT_CACHE: Dict[str, tuple] = {}
+_USER_CONTEXT_TTL_SECONDS = 30.0
 
 
 class EmotionalMemory:
@@ -135,8 +143,13 @@ class EmotionalMemory:
     
     def get_user_context(self, user_id: UUID) -> Dict:
         """Get comprehensive context for a user for personalized responses."""
+        cache_key = str(user_id)
+        cached = _USER_CONTEXT_CACHE.get(cache_key)
+        if cached and (time.monotonic() - cached[0]) < _USER_CONTEXT_TTL_SECONDS:
+            return cached[1]
+
         user = self.db.query(User).filter(User.id == user_id).first()
-        
+
         if not user:
             return {}
         
@@ -158,7 +171,7 @@ class EmotionalMemory:
         except Exception:
             pass
         
-        return {
+        context = {
             "user_name": user.name,
             "department": department_name,
             "role": user.role.value if user.role else None,
@@ -167,6 +180,8 @@ class EmotionalMemory:
             "recent_topics": topics,
             "last_interaction": self._get_last_interaction(user_id)
         }
+        _USER_CONTEXT_CACHE[cache_key] = (time.monotonic(), context)
+        return context
     
     def _get_last_interaction(self, user_id: UUID) -> Optional[str]:
         """Get ISO timestamp of last interaction."""

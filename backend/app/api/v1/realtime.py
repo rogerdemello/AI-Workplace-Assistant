@@ -34,7 +34,7 @@ def _build_snapshot_payload(db: Session) -> dict:
         or 0
     )
     metrics = compute_kpi_overview(db)
-    return {
+    payload = {
         "ts": datetime.utcnow().isoformat(),
         "unread_notifications": int(unread_notifications),
         "open_tickets": int(open_tickets),
@@ -42,6 +42,15 @@ def _build_snapshot_payload(db: Session) -> dict:
         "resolution_rate": float(metrics.get("resolution_rate", 0)),
         "total_tickets": int(metrics.get("total_tickets", 0)),
     }
+    # This SSE session lives for the whole stream and only queries periodically.
+    # End the read transaction now so the connection sits "idle" (not "idle in
+    # transaction") between snapshots — otherwise it holds AccessShareLocks on
+    # tickets/hr_notifications that block DDL (e.g. alembic migrations).
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    return payload
 
 
 @router.get("/hr/stream")

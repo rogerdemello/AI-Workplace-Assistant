@@ -1,11 +1,12 @@
 """Boot-time schema audit.
 
-We currently create tables via ``Base.metadata.create_all`` on startup for dev
-convenience, but Alembic migrations also exist. Without a periodic check, the
-two paths drift silently: a new migration is added but never applied, and the
-running schema diverges from what models expect.
+Postgres schema is owned by Alembic; ``Base.metadata.create_all`` runs on SQLite
+only (see ``main.lifespan``). This check is therefore the safety net that tells
+an operator the deploy forgot ``alembic upgrade head``, rather than the schema
+being conjured into existence and the drift going unnoticed.
 
 This module logs a loud WARN when:
+  * The DB is empty — no schema at all, so every endpoint will fail.
   * The DB has tables but no ``alembic_version`` row (never been stamped).
   * The stamped revision is behind the latest migration file on disk.
 
@@ -98,7 +99,13 @@ def audit_schema(engine: Engine, logger: logging.Logger) -> None:
                     latest,
                 )
             else:
-                logger.info("schema_audit: empty DB; create_all() will materialize schema")
+                # create_all no longer runs on Postgres, so nothing will build
+                # this schema implicitly — say so plainly instead of reassuring.
+                logger.error(
+                    "schema_audit: database is empty and no migrations are applied. "
+                    "DB-backed endpoints will fail until `alembic upgrade head` "
+                    "is run from backend/.",
+                )
             return
 
         if stamped != latest:
