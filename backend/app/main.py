@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -10,9 +10,12 @@ import asyncio
 from typing import Optional
 
 from .config import settings
+from .core import metrics
 from .core.feature_flags import get_feature_flags
 from .core.observability import init_sentry
 from .core.schema_audit import audit_schema
+from .auth import require_roles
+from .models.user import User
 from .database import engine, Base, SessionLocal
 
 # Initialize Sentry as early as possible so import-time errors are captured.
@@ -45,6 +48,7 @@ from .api.v1.wellbeing import router as wellbeing_router
 from .api.v1.wellness import router as wellness_router
 from .api.v1.hr_alerts import router as hr_alerts_router
 from .api.v1.leave import router as leave_router
+from .api.v1.requests import router as requests_router
 from .api.v1.attachments import router as attachments_router
 from .api.v1.mood import router as mood_router
 from .api.v1.appreciation import router as appreciation_router
@@ -120,15 +124,29 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Using SQLite for development")
 
-    # Create tables on boot for both SQLite (no migrations) and Postgres (idempotent DDL).
-    # Wrapped so a transient DB outage produces clear logs instead of a startup crash —
-    # individual endpoints will then surface 503s when the DB is actually needed.
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception:
-        logger.exception(
-            "Database initialization failed at startup. The API will boot but "
-            "DB-backed endpoints will fail until connectivity is restored."
+    # Create tables on boot for SQLite only (dev/test have no migration step).
+    #
+    # Deliberately NOT run against Postgres: create_all silently materialises any
+    # new model on deploy, so the table exists while its migration is never
+    # recorded and alembic drifts behind unnoticed. Postgres schema is owned by
+    # alembic — run `alembic upgrade head` as part of deploy. Override with
+    # DB_CREATE_ALL=true only for throwaway environments.
+    #
+    # Wrapped so a transient DB outage produces clear logs instead of a startup
+    # crash — individual endpoints then surface 503s when the DB is needed.
+    force_create_all = os.getenv("DB_CREATE_ALL", "").lower() in ("1", "true", "yes")
+    if settings.DATABASE_URL.startswith("sqlite") or force_create_all:
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception:
+            logger.exception(
+                "Database initialization failed at startup. The API will boot but "
+                "DB-backed endpoints will fail until connectivity is restored."
+            )
+    else:
+        logger.info(
+            "Skipping create_all on Postgres; schema is managed by alembic. "
+            "Run 'alembic upgrade head' if the audit below reports drift."
         )
 
     # Warn loudly if the DB schema has drifted from alembic head.
@@ -186,10 +204,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         },
     )
 
-# CORS Configuration - Allow frontend origins
+# CORS Configuration - Allow frontend origins.
+# Per-customer deployments set CORS_ALLOW_ORIGINS (comma-separated) to their real
+# frontend origin(s). Defaults cover local dev on both localhost and 127.0.0.1.
+_default_cors = [
+    "http://localhost:8080", "http://localhost:5173", "http://localhost:3000",
+    "http://127.0.0.1:8080", "http://127.0.0.1:5173", "http://127.0.0.1:3000",
+]
+_cors_env = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else _default_cors
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://localhost:5173", "http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -215,15 +241,31 @@ app.middleware("http")(audit_log_middleware)
 async def log_requests(request: Request, call_next):
     """Middleware to log all incoming requests and response times."""
     start_time = time.time()
-    
+
     response = await call_next(request)
-    
+
     process_time = time.time() - start_time
-    
+
     # Log with masked PII
     log_message = f"{request.method} {request.url.path} - Status: {response.status_code} - Duration: {process_time:.3f}s"
     logger.info(mask_pii(log_message))
-    
+
+    # Route template rather than the raw path, so /requests/{id} is one series
+    # instead of one per UUID.
+    route = request.scope.get("route")
+    route_label = getattr(route, "path", None) or "unmatched"
+    metrics.observe_latency("http_request_seconds", process_time, {"route": route_label})
+    if response.status_code >= 500:
+        metrics.increment(
+            "http_server_errors_total",
+            {"route": route_label, "status": str(response.status_code)},
+        )
+    elif response.status_code >= 400:
+        metrics.increment(
+            "http_client_errors_total",
+            {"route": route_label, "status": str(response.status_code)},
+        )
+
     response.headers["X-Process-Time"] = str(process_time)
     return response
 
@@ -236,6 +278,17 @@ async def health_check():
         "status": "ok",
         "version": "1.0.0"
     }
+
+
+@app.get("/metrics")
+async def metrics_endpoint(_hr: User = Depends(require_roles(["hr", "admin"]))):
+    """Pipeline and API counters for this process.
+
+    Role-gated rather than open: error counts by route are operational detail we
+    don't want served to anyone who finds the URL. Values are per-process and
+    reset on restart — see app/core/metrics.py for what they do and don't mean.
+    """
+    return metrics.snapshot()
 
 
 @app.get("/healthz")
@@ -313,6 +366,7 @@ app.include_router(wellbeing_router, prefix="/api/v1")
 app.include_router(wellness_router, prefix="/api/v1")
 app.include_router(hr_alerts_router, prefix="/api/v1")
 app.include_router(leave_router, prefix="/api/v1")
+app.include_router(requests_router, prefix="/api/v1")
 app.include_router(attachments_router, prefix="/api/v1")
 app.include_router(mood_router, prefix="/api/v1")
 app.include_router(appreciation_router, prefix="/api/v1")
