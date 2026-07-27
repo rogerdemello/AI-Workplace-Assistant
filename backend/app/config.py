@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     SUSTAINED_NEGATIVE_MIN_MESSAGES: int = 3
     SUSTAINED_RISK_ALERT_COOLDOWN_HOURS: int = 24
     SUSTAINED_RISK_ALERTS_ENABLED: bool = True
+    # Single-turn alerting (see sentiment_alerts.py). Scores are 0–100.
+    # Alert when one message scores at or below this.
+    SENTIMENT_ALERT_THRESHOLD: int = 30
+    # Alert when conversation-level risk reaches or exceeds this.
+    RISK_ALERT_THRESHOLD: int = 70
+    # Minimum gap between alerts for the same employee, so HR isn't spammed.
+    ALERT_COOLDOWN_MINUTES: int = 30
+    # Comma-separated emotions that raise an alert on their own.
+    EMOTION_ALERT_TRIGGERS: str = "burnout,exhaustion,betrayal,injustice,panic"
     # Hybrid sentiment: Azure chat JSON classifier first, lexicon fallback (see sentiment_llm.py).
     SENTIMENT_HYBRID_ENABLED: bool = True
     SENTIMENT_LLM_MAX_CHARS: int = 2000

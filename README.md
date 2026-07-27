@@ -79,6 +79,12 @@ ship as a dedicated deployment per customer.
 ### Observability & ops
 
 - `/healthz` (liveness) and `/readyz` (DB / Redis / Azure OpenAI checks).
+- `/metrics` (HR/admin only) — counters and latency for the sentiment pipeline
+  (`sentiment_pipeline_processed_total`, `sentiment_pipeline_failures_total` by
+  error type and sync/deferred path) and HTTP errors by route template. Values
+  are per-process and reset on restart, so read them as "is this happening now",
+  not as history. Pipeline failures are also logged as
+  `event=sentiment_pipeline_failed` for log-based alerting.
 - **Sentry** wiring on both backend (FastAPI integration) and frontend
   (dynamic import — no failure when SDK is absent). Set `SENTRY_DSN` /
   `VITE_SENTRY_DSN` to enable.
@@ -128,6 +134,23 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --reload
 ```
 
+#### Database schema
+
+SQLite (the default for local dev) builds its tables automatically on boot.
+
+**Postgres schema is owned by Alembic** — `create_all` is deliberately not run
+against it, so a new model does not silently materialise a table and leave
+migrations drifting behind. Apply migrations as part of every deploy:
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+The boot-time schema audit logs a loud warning if the database is empty or the
+stamped revision is behind the latest migration. Set `DB_CREATE_ALL=true` to
+force `create_all` on Postgres for throwaway environments only.
+
 ### Frontend
 
 ```bash
@@ -149,8 +172,21 @@ python -m scripts.smoke_e2e
 # Run the backend test suite
 pytest
 
+# Load probe: concurrent chat + HR analytics, reports p50/p95/p99 per endpoint.
+# Point it at staging — a local SQLite backend measures SQLite, not production.
+python -m scripts.loadtest --base-url https://staging.example.com \
+    --employees 25 --hr 5 --duration 60
+
 # Start a Celery worker (requires CELERY_BROKER_URL)
 celery -A app.workers.celery_app.celery worker -l info -Q default
+```
+
+Browser end-to-end tests (Playwright) need both servers already running — see
+the header of `new-frontend/playwright.config.ts` for the exact commands:
+
+```bash
+# 1. backend on :8099 (seeded), 2. vite on :8080, then:
+cd new-frontend && npm run test:e2e
 ```
 
 ```bash

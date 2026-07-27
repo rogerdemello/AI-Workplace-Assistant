@@ -48,15 +48,32 @@ EMOTION_SEVERITY = {
 }
 
 
+def _parse_emotion_triggers(raw: object) -> Set[str]:
+    """Parse the comma-separated EMOTION_ALERT_TRIGGERS setting into a set.
+
+    Falls back to the defaults when the value is blank or unparseable, so a
+    typo in configuration can't silently switch emotion alerting off.
+    """
+    if isinstance(raw, (set, frozenset, list, tuple)):
+        values = {str(item).strip().lower() for item in raw if str(item).strip()}
+        return values or set(DEFAULT_EMOTION_ALERTS)
+    if isinstance(raw, str):
+        values = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        return values or set(DEFAULT_EMOTION_ALERTS)
+    return set(DEFAULT_EMOTION_ALERTS)
+
+
 class SentimentAlertService:
     """Service for creating HR alerts based on sentiment analysis."""
 
     def __init__(self, db: Session):
         self.db = db
-        self.sentiment_threshold = getattr(settings, "SENTIMENT_ALERT_THRESHOLD", DEFAULT_SENTIMENT_THRESHOLD)
-        self.risk_threshold = getattr(settings, "RISK_ALERT_THRESHOLD", DEFAULT_RISK_THRESHOLD)
-        self.emotion_alerts = getattr(settings, "EMOTION_ALERT_TRIGGERS", DEFAULT_EMOTION_ALERTS)
-        self.cooldown_minutes = getattr(settings, "ALERT_COOLDOWN_MINUTES", DEFAULT_COOLDOWN_MINUTES)
+        # Read settings directly: these are declared on Settings, so a getattr
+        # fallback would silently mask a rename and pin the old default forever.
+        self.sentiment_threshold = int(settings.SENTIMENT_ALERT_THRESHOLD)
+        self.risk_threshold = int(settings.RISK_ALERT_THRESHOLD)
+        self.emotion_alerts = _parse_emotion_triggers(settings.EMOTION_ALERT_TRIGGERS)
+        self.cooldown_minutes = int(settings.ALERT_COOLDOWN_MINUTES)
 
     def process_message_sentiment(
         self,
