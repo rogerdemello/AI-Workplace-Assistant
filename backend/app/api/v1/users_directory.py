@@ -124,6 +124,23 @@ class UserAdminUpdate(BaseModel):
     status: Optional[str] = None
 
 
+class UserInvite(BaseModel):
+    name: str
+    email: str
+    role: str = "employee"
+    designation: Optional[str] = None
+    department_id: Optional[str] = None
+    manager_id: Optional[str] = None
+
+
+class UserInviteResponse(UserListItem):
+    # Returned once at creation so HR can hand the credential over out-of-band
+    # when SMTP isn't wired. When an invite email is sent, the frontend can hide
+    # the temp password and just confirm delivery.
+    temp_password: str
+    invite_email_sent: bool
+
+
 @router.patch("/me", response_model=UserListItem)
 def update_my_profile(
     payload: UserSelfUpdate,
@@ -232,6 +249,86 @@ def admin_update_user(
         designation=u.designation,
         department=dname,
         status=u.status.value if hasattr(u.status, "value") else str(u.status),
+    )
+
+
+@router.post("", response_model=UserInviteResponse, status_code=status.HTTP_201_CREATED)
+def invite_user(
+    payload: UserInvite,
+    db: Session = Depends(get_db),
+    _hr: User = Depends(require_roles(["hr", "admin"])),
+):
+    """HR/admin: create (invite) a new user.
+
+    Generates a temporary password and best-effort emails an invite when SMTP
+    is configured. The temp password is also returned so HR can share it
+    manually on deployments without outbound email.
+    """
+    import secrets
+    from ...auth import hash_password
+
+    email = (payload.email or "").strip().lower()
+    name = (payload.name or "").strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid email is required.")
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Name is required.")
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with that email already exists.")
+    try:
+        role = UserRole(payload.role)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid role: {payload.role}")
+
+    temp_password = secrets.token_urlsafe(9)
+    user = User(
+        name=name,
+        email=email,
+        hashed_password=hash_password(temp_password),
+        role=role,
+        designation=(payload.designation or "").strip() or None,
+        department_id=payload.department_id or None,
+        manager_id=payload.manager_id or None,
+        status=UserStatus.active,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    # Best-effort invite email — never fail the invite if SMTP is unset/broken.
+    invite_email_sent = False
+    try:
+        from ...services.email_sender import send_email_via_smtp
+        login_url = os.getenv("FRONTEND_BASE_URL", "").rstrip("/") + "/login" if os.getenv("FRONTEND_BASE_URL") else "the MARK app"
+        send_email_via_smtp(
+            to=email,
+            subject="You've been invited to MARK",
+            body=(
+                f"Hi {name},\n\n"
+                f"An account has been created for you on MARK.\n\n"
+                f"Sign in at {login_url} with:\n"
+                f"  Email: {email}\n"
+                f"  Temporary password: {temp_password}\n\n"
+                f"Please change your password after your first sign-in.\n"
+            ),
+        )
+        invite_email_sent = True
+    except Exception:
+        logger.info("Invite email not sent (SMTP unconfigured or failed) for %s", email, exc_info=True)
+
+    dept = _dept_map(db)
+    dname = dept.get(str(user.department_id), "General") if user.department_id else "General"
+    return UserInviteResponse(
+        id=str(user.id),
+        email=user.email,
+        name=user.name,
+        role=user.role.value if hasattr(user.role, "value") else str(user.role),
+        employee_id=user.employee_id,
+        designation=user.designation,
+        department=dname,
+        status=user.status.value if hasattr(user.status, "value") else str(user.status),
+        temp_password=temp_password,
+        invite_email_sent=invite_email_sent,
     )
 
 
