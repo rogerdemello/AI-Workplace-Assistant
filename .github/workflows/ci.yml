@@ -15,7 +15,12 @@ jobs:
   backend-tests:
     name: Backend tests (pytest)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The suite takes ~32 min on a clean install. Most of that is tenacity
+    # retrying LLM calls against an unreachable mock endpoint before falling
+    # back to the lexicon path. The real fix is stubbing the client in tests
+    # rather than letting each retry burn its timeout; until then this needs
+    # headroom, because 15 min killed the run before it finished.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: backend

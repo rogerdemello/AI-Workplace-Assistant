@@ -33,6 +33,25 @@ _BM25_STOP_WORDS = {
 }
 
 
+def _normalise_scores(scores: List[float]) -> List[float]:
+    """Map raw BM25 scores onto 0..1, tolerating negative values.
+
+    BM25 IDF is negative for a term present in every document, so on a small
+    corpus a genuine match can score below zero. Min-max keeps the ranking and
+    still marks a lone matching chunk as relevant; an all-zero corpus (no query
+    term present anywhere) stays at zero so nothing is falsely retrieved.
+    """
+    if not scores:
+        return []
+    top = max(scores)
+    bottom = min(scores)
+    if top > bottom:
+        span = top - bottom
+        return [(s - bottom) / span for s in scores]
+    # Every chunk scored identically: either all matched equally, or none did.
+    return [0.0 if top == 0 else 1.0 for _ in scores]
+
+
 def _bm25_tokenize(text: str) -> List[str]:
     return [
         tok
@@ -152,10 +171,13 @@ class RAGRetrieveService:
 
         # Normalise BM25 to 0..1 so the weighted sum with cosine similarity
         # stays in a comparable range across queries.
-        max_kw = max(keyword_scores) if keyword_scores else 0.0
-        normalised_kw = [
-            (s / max_kw) if max_kw > 0 else 0.0 for s in keyword_scores
-        ]
+        #
+        # Min-max rather than divide-by-max: BM25 IDF goes negative when a term
+        # appears in every document, which is the norm on a small corpus. The
+        # old `s / max_kw if max_kw > 0` collapsed every score to zero in that
+        # case, so keyword fallback — the thing that rescues us when embeddings
+        # are down — silently returned nothing for small document sets.
+        normalised_kw = _normalise_scores(keyword_scores)
 
         results = []
         for idx, chunk in enumerate(chunks):
