@@ -708,7 +708,7 @@ def _run_stub_sync(provider: str, category: str, dry_run: bool) -> IntegrationSy
     )
 
 
-def _run_live_sync(provider: str, category: str, dry_run: bool) -> IntegrationSyncResponse:
+def _run_live_sync(provider: str, category: str, dry_run: bool, db: Session) -> IntegrationSyncResponse:
     service = ProviderSyncService()
     if category == "hrms":
         if provider == "workday_hrms":
@@ -717,7 +717,7 @@ def _run_live_sync(provider: str, category: str, dry_run: bool) -> IntegrationSy
         else:
             base_url = os.getenv("SAP_SUCCESSFACTORS_BASE_URL", "").strip()
             api_token = os.getenv("SAP_SUCCESSFACTORS_API_TOKEN", "").strip()
-        result = service.run_hrms_sync(base_url=base_url, api_token=api_token, dry_run=dry_run)
+        result = service.run_hrms_sync(base_url=base_url, api_token=api_token, dry_run=dry_run, db=db)
     else:
         if provider == "adp_payroll":
             base_url = os.getenv("ADP_BASE_URL", "").strip()
@@ -725,7 +725,7 @@ def _run_live_sync(provider: str, category: str, dry_run: bool) -> IntegrationSy
         else:
             base_url = os.getenv("RAZORPAY_BASE_URL", "").strip()
             api_token = os.getenv("RAZORPAY_API_TOKEN", "").strip()
-        result = service.run_payroll_sync(base_url=base_url, api_token=api_token, dry_run=dry_run)
+        result = service.run_payroll_sync(base_url=base_url, api_token=api_token, dry_run=dry_run, db=db)
     return IntegrationSyncResponse(
         provider=provider,
         category=category,
@@ -740,6 +740,7 @@ def _run_live_sync(provider: str, category: str, dry_run: bool) -> IntegrationSy
 @router.post("/hrms/sync", response_model=IntegrationSyncResponse)
 def trigger_hrms_sync(
     payload: IntegrationSyncRequest,
+    db: Session = Depends(get_db),
     _hr: User = Depends(get_current_user),
 ):
     provider = payload.provider.strip().lower()
@@ -752,7 +753,7 @@ def trigger_hrms_sync(
     }
     if configured.get(provider):
         try:
-            return _run_live_sync(provider=provider, category="hrms", dry_run=payload.dry_run)
+            return _run_live_sync(provider=provider, category="hrms", dry_run=payload.dry_run, db=db)
         except Exception as exc:
             if not payload.dry_run:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Live HRMS sync failed: {str(exc)}")
@@ -762,6 +763,7 @@ def trigger_hrms_sync(
 @router.post("/payroll/sync", response_model=IntegrationSyncResponse)
 def trigger_payroll_sync(
     payload: IntegrationSyncRequest,
+    db: Session = Depends(get_db),
     _hr: User = Depends(get_current_user),
 ):
     provider = payload.provider.strip().lower()
@@ -774,7 +776,7 @@ def trigger_payroll_sync(
     }
     if configured.get(provider):
         try:
-            return _run_live_sync(provider=provider, category="payroll", dry_run=payload.dry_run)
+            return _run_live_sync(provider=provider, category="payroll", dry_run=payload.dry_run, db=db)
         except Exception as exc:
             if not payload.dry_run:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Live payroll sync failed: {str(exc)}")

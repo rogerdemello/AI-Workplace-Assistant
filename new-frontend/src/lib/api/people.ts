@@ -1,5 +1,5 @@
 import type { Employee } from "@/lib/domain-types";
-import { getJson, patchJson } from "@/lib/api/client";
+import { getJson, patchJson, postJson } from "@/lib/api/client";
 
 export interface ProfileUpdatePayload {
   name?: string;
@@ -24,6 +24,30 @@ export async function updateMyProfile(payload: ProfileUpdatePayload): Promise<bo
 export async function adminUpdateUser(userId: string, payload: AdminUserUpdatePayload): Promise<boolean> {
   const row = await patchJson<Record<string, unknown>>(`/api/v1/users/${userId}`, payload);
   return Boolean(row);
+}
+
+export interface InviteUserPayload {
+  name: string;
+  email: string;
+  role?: string;
+  designation?: string;
+  department_id?: string;
+  manager_id?: string;
+}
+
+export interface InviteUserResult {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  department: string;
+  status: string;
+  temp_password: string;
+  invite_email_sent: boolean;
+}
+
+export async function inviteUser(payload: InviteUserPayload): Promise<InviteUserResult | null> {
+  return postJson<InviteUserResult>("/api/v1/users", payload);
 }
 
 function sentimentLabelFromScore(score: number): Employee["sentiment"] {
