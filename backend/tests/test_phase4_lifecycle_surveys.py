@@ -14,13 +14,13 @@ from app.services.lifecycle_surveys import ensure_lifecycle_surveys, get_lifecyc
 
 def test_ensure_lifecycle_surveys_idempotent(db):
     first = ensure_lifecycle_surveys(db)
-    assert set(first.keys()) == {"onboarding", "exit"}
+    assert set(first.keys()) == {"onboarding", "exit", "manager_change", "role_change"}
 
     second = ensure_lifecycle_surveys(db)
     assert second == first  # same ids, no duplicates
 
     # Exactly one of each type exists.
-    for stype in ("onboarding", "exit"):
+    for stype in ("onboarding", "exit", "manager_change", "role_change"):
         rows = db.query(Survey).filter(Survey.survey_type == stype).all()
         assert len(rows) == 1
 
