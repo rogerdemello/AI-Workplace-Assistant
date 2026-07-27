@@ -4,49 +4,137 @@ MARK — TASK & ROADMAP (task.txt)
 Use this file to prioritize engineering work: sentiment, chat→HR signals, UX,
 and “world class” quality. Update dates/owners as you ship.
 
+Legend: [x] done   [~] partly done (detail inline)   [ ] not started
+
+Last reviewed: 2026-07-27 (branch feat/friendly-hr-agent)
+
+--------------------------------------------------------------------------------
+0. STATE OF PLAY — read this before picking anything up
+--------------------------------------------------------------------------------
+
+Shipped on this branch (not yet merged, CI has not run on it):
+   - Conversational requests: appointments, expenses, shift changes/WFH and
+     document requests, on the shared employee_requests table, with an HR
+     review page. Leave and tickets already existed.
+   - Proactive check-in delivery, which was a no-op end to end. Three separate
+     breaks: jobs wrote reminders as "cancelled" so dispatch skipped them;
+     delivery was SSE-only so it never reached anyone without an open chat;
+     and the chat restores from local storage, so persistence alone still
+     wasn't delivery. Now: active reminders, durable chat history, and a
+     watermarked catch-up fetch on open.
+   - Confidentiality fixes on manager surfaces (see C/security below).
+   - Alembic owns the Postgres schema; create_all is SQLite-only.
+   - /metrics endpoint and real, tunable alert thresholds.
+
+Blocking before this is production-real:
+   1. Merge. The branch is ~29 commits ahead of main and CI only runs on main
+      and PRs to main, so none of it has been through CI.
+   2. Uncommitted pre-existing work in the tree (billing, SSO, provider_sync,
+      Admin.tsx, Login.tsx, chat/__init__.py, probe_* scripts, the e2e/
+      directory). Provenance unknown — someone who knows needs to decide.
+   3. DEPLOY CHANGE: `alembic upgrade head` is now required on every deploy.
+      create_all no longer builds the Postgres schema. The boot-time audit
+      logs an error if the DB is empty or behind.
+   4. CI backend-tests has timeout-minutes: 15; the suite (367 tests) takes
+      ~30 min locally. May fit on CI (faster LLM failure path) — unverified.
+
+Stranded by the uncommitted work above, fix when it is resolved:
+   - .env.example additions (DB_CREATE_ALL, alert thresholds) are written but
+     uncommitted, because that file also carries someone else's pending edits.
+     The settings themselves ARE committed, with working defaults in config.py.
+   - new-frontend/e2e/ is entirely untracked, including playwright.config.ts
+     and the proactive.spec.ts added here.
+
 --------------------------------------------------------------------------------
 1. WHAT NEEDS TO BE DONE
 --------------------------------------------------------------------------------
 
 A. Sentiment & signals (core product)
-   [ ] Ensure every employee chat path persists the sentiment pipeline (unified
-       /message, /respond, /respond/stream, /messages) — verify in staging.
-   [ ] Backfill or reconcile: if prod had partial coverage, run a one-off job
-       to re-process recent messages into sentiment_logs where missing (optional).
-   [ ] HR dashboard: confirm employee list shows updated sentiment_score,
-       trend, risk, top_emotion after real chat traffic (smoke test).
+   [x] Every employee chat path persists the sentiment pipeline. Both the
+       synchronous and the deferred path are now instrumented — the deferred
+       one is the production default (CHAT_DEFER_NONBLOCKING_SIDE_EFFECTS), so
+       instrumenting only the sync path would have left failures invisible.
+   [ ] Verify in staging under real traffic. Not done — needs an environment.
+   [ ] Backfill/reconcile recent messages into sentiment_logs where missing
+       (optional; only if prod had partial coverage).
+   [ ] HR dashboard smoke test after real chat traffic: confirm sentiment_score,
+       trend, risk and top_emotion move. Covered by integration tests, not by
+       an observed staging run.
 
 B. HR visibility & trust
    [ ] Document for HR: which screens map to which APIs (/analytics/dashboard,
-       /employees, /emotions, attrition, etc.).
-   [ ] Add “last updated from chat” or signal freshness in UI where useful
-       (privacy-safe: no raw text or redacted preview behind policy).
+       /employees, /emotions, attrition, /requests).
+   [~] Signal freshness in the UI. The API exposes last_chat_sentiment_at and
+       the dashboard bundle carries it; surfacing it consistently in the UI is
+       still open. Privacy-safe: no raw text.
 
 C. Quality & operations
-   [ ] Load test chat + analytics under expected concurrent users.
-   [ ] Monitoring: structured logs + metrics for pipeline failures, latency,
-       and HR API errors.
-   [ ] Security review: RBAC on analytics routes, PII in logs, retention.
+   [~] Load test chat + analytics under expected concurrent users.
+       Harness exists: backend/scripts/loadtest.py, reports p50/p95/p99 and
+       errors per endpoint. NOT YET RUN against a realistic environment — a
+       local SQLite run measures SQLite, not the deployment.
+   [x] Monitoring: /metrics (HR/admin only) for pipeline throughput, failures
+       by error type and path, and HTTP errors by route template. Pipeline
+       failures also log event=sentiment_pipeline_failed for log alerting.
+       Caveat: per-process, resets on restart — a sample, not a cluster total.
+   [~] Security review.
+       Done: manager-visibility audit. Two real defects fixed — anonymous
+       tickets were counted against named reports (on a small team that
+       identifies the author to the manager the complaint may be about), and
+       appointments/documents raised to HR were visible to the employee's
+       manager. Managers now see only shift changes and expenses.
+       Still open: PII in logs, data retention policy, RBAC sweep of the
+       analytics routes specifically.
 
 D. Product polish (when core is stable)
-   [ ] Manager vs HR views: scoped data only (direct reports vs org).
-   [ ] Alerts: configurable thresholds (e.g. sustained negative sentiment).
+   [~] Manager vs HR views: scoped data only.
+       Fixed for requests and anonymous tickets. OPEN DECISION: managers still
+       see per-report sentiment and attrition risk via /manager/team, derived
+       from private conversations with Mark. This reads as intended rather than
+       accidental, but it deserves a conscious yes/no rather than inheriting it.
+   [x] Alerts: configurable thresholds. SENTIMENT_ALERT_THRESHOLD,
+       RISK_ALERT_THRESHOLD, ALERT_COOLDOWN_MINUTES, EMOTION_ALERT_TRIGGERS.
+       These previously read via getattr() against names never declared on
+       Settings, so no deployment could actually tune them.
+
+E. Testing
+   [x] Backend: 367 tests.
+   [x] Browser end-to-end (Playwright, 12 specs) including the proactive
+       check-in round-trip — employee away, HR acts, employee returns and the
+       message is waiting; reload does not replay it.
+   [ ] Playwright is NOT in CI. Only the Python smoke script runs there, so
+       the browser suite regresses silently.
 
 --------------------------------------------------------------------------------
 2. HOW TO DO IT (practical steps)
 --------------------------------------------------------------------------------
 
-Sentiment pipeline (already wired in code — operationalize it)
+Deploying (changed — read this)
+   1. `cd backend && alembic upgrade head`. Required now; the app will not
+      create Postgres tables for you.
+   2. Watch the boot log for schema_audit. An error there means step 1 was
+      skipped or a migration is pending.
+   3. DB_CREATE_ALL=true forces the old behaviour, for throwaway envs only.
+
+Sentiment pipeline (wired in code — operationalize it)
    1. Deploy backend with latest chat.py pipeline helper.
    2. Run integration tests: pytest backend/tests/test_chat_sentiment_hr.py
    3. Manual: employee sends chat → HR refreshes Pulse/Employees → scores move.
-   4. If using multiple frontends, confirm they call POST /api/v1/chat/message
-      OR respond/stream — both now update logs.
+   4. Watch /metrics: sentiment_pipeline_failures_total should stay flat.
 
 HR dashboard verification
    1. Log in as HR → GET /api/v1/analytics/dashboard (or use UI).
    2. Cross-check one employee: SentimentLog rows vs dashboard sentiment_score.
    3. Document any delay (caching, refresh interval).
+
+Load testing
+   python -m scripts.loadtest --base-url https://staging.example.com \
+       --employees 25 --hr 5 --duration 60
+   Run against staging. Compare p95 against whatever you decide is acceptable
+   for the chat hot path; there is no agreed budget yet — set one.
+
+Browser e2e (needs both servers up; see playwright.config.ts header)
+   cd new-frontend && npm run test:e2e
 
 Safe rollout
    1. Feature flag optional: “strict_pipeline” logging only before full enforce.
@@ -58,16 +146,21 @@ Safe rollout
 
 Accuracy & fairness
    - Move beyond lexicon-only: add a managed model (Azure/OpenAI/other) with
-     fallback to rules; evaluate on labeled in-domain data.
-   - Multilingual support; test for bias across regions and roles.
+     fallback to rules; evaluate on labeled in-domain data. (Hybrid LLM +
+     lexicon fallback exists — SENTIMENT_HYBRID_ENABLED — but has not been
+     evaluated against labeled in-domain data.)
+   - Multilingual support; test for bias across regions and roles. Not started.
 
 Reliability
    - Idempotent pipeline writes; dead-letter queue for failed processing;
-     replay jobs.
+     replay jobs. Not started — failures are now counted and logged, but a
+     failed message is still lost rather than retried.
 
 Privacy & compliance
    - Minimize stored raw text; prefer aggregates; clear retention; DPIA-ready
-     documentation; role-based redaction in HR UI.
+     documentation; role-based redaction in HR UI. Not started. Note that
+     proactive nudges now persist to chat history, which adds to the retention
+     surface — worth including in that policy.
 
 Explainability
    - HR sees “why” (factors: recent negative ratio, topics, emotion mix) not
@@ -79,15 +172,19 @@ Human in the loop
 
 Performance
    - Sub-second chat; async pipeline if needed; precomputed dashboard tiles.
+     No agreed latency budget exists yet — set one before the load test, or
+     the numbers have nothing to fail against.
 
 --------------------------------------------------------------------------------
 4. ADVANCEMENT PLANS (phased)
 --------------------------------------------------------------------------------
 
 Phase 1 — Solidify (0–4 weeks)
-   - End-to-end tests: chat → DB → HR API; staging sign-off checklist.
-   - Observability baseline: dashboards for errors and latency.
-   - HR admin doc: one-pager on metrics definitions.
+   - [x] End-to-end tests: chat → DB → HR API. Backend + browser both cover it.
+   - [ ] Staging sign-off checklist.
+   - [~] Observability baseline: /metrics exists; no dashboards or alerting
+         built on top of it yet.
+   - [ ] HR admin doc: one-pager on metrics definitions.
 
 Phase 2 — Smarter signals (1–3 months)
    - Hybrid sentiment: API + lexicon fallback; calibration to 0–100 scale.
