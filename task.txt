@@ -6,7 +6,7 @@ and “world class” quality. Update dates/owners as you ship.
 
 Legend: [x] done   [~] partly done (detail inline)   [ ] not started
 
-Last reviewed: 2026-07-27 (branch feat/friendly-hr-agent)
+Last reviewed: 2026-07-28 (main)
 
 --------------------------------------------------------------------------------
 0. STATE OF PLAY — read this before picking anything up
@@ -26,17 +26,27 @@ Shipped on this branch (not yet merged, CI has not run on it):
    - Alembic owns the Postgres schema; create_all is SQLite-only.
    - /metrics endpoint and real, tunable alert thresholds.
 
-Blocking before this is production-real:
-   1. Merge. The branch is ~29 commits ahead of main and CI only runs on main
-      and PRs to main, so none of it has been through CI.
-   2. Uncommitted pre-existing work in the tree (billing, SSO, provider_sync,
-      Admin.tsx, Login.tsx, chat/__init__.py, probe_* scripts, the e2e/
-      directory). Provenance unknown — someone who knows needs to decide.
-   3. DEPLOY CHANGE: `alembic upgrade head` is now required on every deploy.
-      create_all no longer builds the Postgres schema. The boot-time audit
-      logs an error if the DB is empty or behind.
-   4. CI backend-tests has timeout-minutes: 15; the suite (367 tests) takes
-      ~30 min locally. May fit on CI (faster LLM failure path) — unverified.
+Resolved since the last review:
+   1. Everything is merged to main and CI is green (PRs #2-#5). CI itself had
+      been red since at least May: openai, tenacity and email-validator were
+      imported but never declared, so every clean install died at collection.
+   2. The uncommitted work in the tree has been reviewed and landed. It was
+      mostly finished bug fixes — including one that mattered, StaticPool on a
+      file-backed SQLite URL forcing every request onto one connection.
+   3. DEPLOY CHANGE, still current: `alembic upgrade head` is required on every
+      deploy. create_all no longer builds the Postgres schema; the boot-time
+      audit logs an error if the DB is empty or behind.
+   4. CI timing settled: the full suite runs in ~10.5 min on CI (not the ~32
+      min seen locally — a local run hits a reachable endpoint that 401s slowly,
+      where CI fails DNS instantly). Timeout raised to 45 min for headroom.
+
+Still blocking a confident production claim:
+   1. Nothing has been verified against a realistic environment. Every "it
+      works" here means tests and a local stack, never staging under load.
+   2. No data retention policy (see C).
+   3. e2e points at an unreachable model endpoint, so CI exercises a permanent
+      -outage path rather than normal operation. Stubbing the AI client would
+      be faster and more representative.
 
 Stranded by the uncommitted work above, fix when it is resolved:
    - .env.example additions (DB_CREATE_ALL, alert thresholds) are written but
@@ -61,24 +71,21 @@ A. Sentiment & signals (core product)
        trend, risk and top_emotion move. Covered by integration tests, not by
        an observed staging run.
 
-A2. KNOWN PRODUCT ISSUE — composer can silently drop a send
-   [ ] The chat send button is disabled while `isSending || isTyping`, and
-       handleSend returns early on isSending. Both are transient, so a send
-       issued while the previous reply is settling can be swallowed with no
-       feedback: the text is cleared, no request goes out, and the employee
-       believes they sent it.
-       Evidence: CI logged 2 POSTs for a 6-turn conversation. The browser test
-       now retries each turn (up to 3 attempts) and the retry fires on most
-       turns — the appointment spec went from ~56s to ~2.9m purely on retries.
-       That retry compensates for the race; it does not fix it.
-       Fix properly by queueing or disabling only on isSending, and by
-       surfacing a failed send instead of clearing the input. For a product
-       where the message may be someone's first disclosure of a problem,
-       losing it silently is the worst failure mode available.
+A2. Composer dropping sends — FIXED
+   [x] Sends issued while a reply was in flight were swallowed: the input had
+       already cleared, no request went out, nothing told the employee. Now
+       queued and dispatched in order; the button is no longer disabled on
+       transient state; the input clears only on acceptance.
+       Confirmed by measurement, not assertion: the appointment spec needed a
+       retry that fired on most turns (~56s -> ~2.9m). With the queue the retry
+       never fires and the spec is back to 57s, so the retry was removed.
+       Covered by new-frontend/e2e/composer.spec.ts.
 
 B. HR visibility & trust
-   [ ] Document for HR: which screens map to which APIs (/analytics/dashboard,
-       /employees, /emotions, attrition, /requests).
+   [x] Screens -> APIs documented: backend/docs/SCREEN_API_MAP.md (all 27
+       endpoints verified against app/api/v1, plus the debugging traps: chat
+       uses the streaming endpoint, transcripts restore from local storage,
+       conversation_id must be threaded, the two SSE streams are role-specific).
    [~] Signal freshness in the UI. The API exposes last_chat_sentiment_at and
        the dashboard bundle carries it; surfacing it consistently in the UI is
        still open. Privacy-safe: no raw text.
@@ -92,14 +99,28 @@ C. Quality & operations
        by error type and path, and HTTP errors by route template. Pipeline
        failures also log event=sentiment_pipeline_failed for log alerting.
        Caveat: per-process, resets on restart — a sample, not a cluster total.
-   [~] Security review.
-       Done: manager-visibility audit. Two real defects fixed — anonymous
-       tickets were counted against named reports (on a small team that
-       identifies the author to the manager the complaint may be about), and
-       appointments/documents raised to HR were visible to the employee's
-       manager. Managers now see only shift changes and expenses.
-       Still open: PII in logs, data retention policy, RBAC sweep of the
-       analytics routes specifically.
+   [x] Security review — RBAC and PII complete.
+       Manager visibility: anonymous tickets were counted against named
+       reports (on a small team that identifies the author to the manager the
+       complaint may be about); appointments and documents raised to HR were
+       visible to the employee's manager. Managers now see only shift changes
+       and expenses.
+       Route guards: every api/v1 route audited. POST /tickets/sla-scan/trigger
+       had no auth at all — an unbounded DB job that also reported SLA breach
+       counts. The three rooms GETs were public, leaking office layout and
+       meeting patterns. A test now holds unauthenticated routes to an explicit
+       allowlist with a reason each.
+       PII: no message content is logged anywhere, and the audit middleware
+       stores only a SHA-256 of the body. Masking gained international and
+       Indian mobile formats (the most likely real number in this deployment),
+       and the credit-card pattern no longer bites chunks out of UUIDs.
+   [~] Data retention — position documented, NOT enforced.
+       backend/docs/DATA_RETENTION.md enumerates every table holding employee
+       free text, proposes periods, and states plainly that nothing is deleted
+       today. Open gaps recorded there: no deletion job, no subject-access or
+       erasure path, anonymous tickets still store user_id (anonymity is
+       presentation-layer only), no residency position.
+       Remaining work is a business decision on the periods, then a job.
 
 D. Product polish (when core is stable)
    [~] Manager vs HR views: scoped data only.
@@ -117,8 +138,10 @@ E. Testing
    [x] Browser end-to-end (Playwright, 12 specs) including the proactive
        check-in round-trip — employee away, HR acts, employee returns and the
        message is waiting; reload does not replay it.
-   [ ] Playwright is NOT in CI. Only the Python smoke script runs there, so
-       the browser suite regresses silently.
+   [x] Playwright runs in CI (browser-e2e job, starts both servers). It has
+       already paid for itself: it caught the nudge LIMIT ordering bug, the
+       watermark losing HR messages, the flow-opening phrase being captured as
+       its own answer, the unreachable-model crash, and the composer send-drop.
 
 --------------------------------------------------------------------------------
 2. HOW TO DO IT (practical steps)
@@ -196,10 +219,16 @@ Performance
 
 Phase 1 — Solidify (0–4 weeks)
    - [x] End-to-end tests: chat → DB → HR API. Backend + browser both cover it.
-   - [ ] Staging sign-off checklist.
+   - [x] Staging sign-off checklist: backend/docs/STAGING_SIGNOFF.md, with a
+         pass condition per item and a note that the load test needs an agreed
+         p95 target beforehand or it cannot fail.
    - [~] Observability baseline: /metrics exists; no dashboards or alerting
          built on top of it yet.
-   - [ ] HR admin doc: one-pager on metrics definitions.
+   - [x] HR admin doc: backend/docs/HR_METRICS.md — defines sentiment score,
+         trend, risk and top emotion from the code that computes them, and is
+         explicit about where they mislead (50 = no history not neutral; the
+         10-point guardrail lags reality downward; silence accrues 20% of risk;
+         averages are unweighted so 3 messages and 300 look alike).
 
 Phase 2 — Smarter signals (1–3 months)
    - Hybrid sentiment: API + lexicon fallback; calibration to 0–100 scale.
