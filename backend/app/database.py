@@ -44,12 +44,26 @@ def _build_connect_args(database_url: str) -> dict:
     return {}
 
 if DATABASE_URL.startswith("sqlite"):
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        echo=False
-    )
+    # StaticPool (one shared connection) is REQUIRED for in-memory SQLite so all
+    # threads see the same DB — but for a FILE-based SQLite it forces every
+    # request onto a single connection, which corrupts under the concurrent
+    # request bursts a real server/browser produces (sqlite3.InterfaceError /
+    # "Could not refresh instance"). File DBs can safely use per-connection
+    # pooling; a busy timeout absorbs brief write-lock contention.
+    _is_memory = (":memory:" in DATABASE_URL) or ("mode=memory" in DATABASE_URL)
+    if _is_memory:
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+            echo=False,
+        )
+    else:
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={"check_same_thread": False, "timeout": 30},
+            echo=False,
+        )
 else:
     connect_args = _build_connect_args(DATABASE_URL)
 

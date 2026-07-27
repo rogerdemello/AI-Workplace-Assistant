@@ -35,9 +35,17 @@ class ChatService:
             status=ConversationStatus.active,
         )
         self.db.add(conversation)
+        self.db.flush()  # assign client-side defaults (id) within the txn
+        cid = conversation.id  # capture before commit expires the instance
         self.db.commit()
-        self.db.refresh(conversation)
-        return conversation
+        # Post-commit refresh is a needless round-trip and, on a shared DB
+        # connection under concurrency, can raise even though the row is already
+        # committed. Re-fetch by PK; fall back to the in-memory object if that
+        # hiccups so we never 500 a successful create.
+        try:
+            return self.db.get(Conversation, cid) or conversation
+        except Exception:
+            return conversation
 
     def get_user_conversations(self, user_id: UUID, limit: int = 50) -> List[Conversation]:
         return (
