@@ -37,6 +37,38 @@ export function loadChatSnapshot(email: string | null | undefined): PersistedCha
   }
 }
 
+/**
+ * Watermark for proactive nudges already shown to this user.
+ *
+ * Kept under its own key rather than inside the snapshot so adding it doesn't
+ * change the snapshot VERSION — a bump would discard every existing transcript.
+ */
+function getNudgeWatermarkKey(email: string): string {
+  return `${PREFIX}:nudge-seen:${email.trim().toLowerCase()}`;
+}
+
+export function loadNudgeWatermark(email: string | null | undefined): string | null {
+  if (typeof window === "undefined" || !email?.trim()) {
+    return null;
+  }
+  try {
+    return window.localStorage.getItem(getNudgeWatermarkKey(email));
+  } catch {
+    return null;
+  }
+}
+
+export function saveNudgeWatermark(email: string | null | undefined, isoTimestamp: string): void {
+  if (typeof window === "undefined" || !email?.trim() || !isoTimestamp) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(getNudgeWatermarkKey(email), isoTimestamp);
+  } catch {
+    // Ignore storage quota/private mode errors.
+  }
+}
+
 export function saveChatSnapshot(
   email: string | null | undefined,
   snapshot: Omit<PersistedChatSnapshot, "version">,
