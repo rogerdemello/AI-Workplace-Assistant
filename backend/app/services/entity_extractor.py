@@ -185,6 +185,7 @@ def _heuristic_request_entities(
     flow_name: str,
     message: str,
     current_data: Optional[Dict[str, Any]] = None,
+    last_question: Optional[str] = None,
 ) -> Dict[str, Optional[Any]]:
     """Rule-based slot extraction for the request flows — no LLM round-trip needed."""
     fields = REQUEST_FIELDS.get(flow_name, [])
@@ -225,9 +226,14 @@ def _heuristic_request_entities(
         if amount_match:
             out["amount"] = amount_match.group(1)
 
-    # Free-text slot the flow is currently waiting on takes the whole message.
+    # A free-text slot takes the whole message only when the flow actually asked
+    # for it. Without that check the phrase that *starts* the flow becomes the
+    # answer — "I want to book an appointment with HR" would file itself as the
+    # topic, and HR would read "1:1 with HR - i want to book an appointment
+    # with hr" instead of why the employee wants to talk.
     if (
         pending in _REQUEST_FREE_TEXT_SLOTS
+        and last_question == pending
         and out.get(pending) is None
         and not re.match(r"^(yes|no|yeah|yep|nope|ok|okay|sure)\b", text.lower())
     ):
@@ -382,6 +388,7 @@ Return ONLY the JSON, no other text."""
         flow_name: str,
         message: str,
         current_data: Optional[Dict[str, Any]] = None,
+        last_question: Optional[str] = None,
     ) -> Dict[str, Optional[Any]]:
         """
         Extract slots for an appointment / expense / shift-change / document request.
@@ -393,7 +400,9 @@ Return ONLY the JSON, no other text."""
         if not fields:
             return {}
 
-        heuristic = _heuristic_request_entities(flow_name, message, current_data)
+        heuristic = _heuristic_request_entities(
+            flow_name, message, current_data, last_question
+        )
         if _fast_chat_enabled() and any(v is not None for v in heuristic.values()):
             return heuristic
 
