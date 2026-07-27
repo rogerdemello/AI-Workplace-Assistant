@@ -1,7 +1,7 @@
 """Tests for fast-path intent classification."""
 
 import pytest
-from app.services.intent_classifier import IntentClassifier, _FAST_ROUTES
+from app.services.intent_classifier import INTENT_LIST, IntentClassifier, _FAST_ROUTES
 
 
 @pytest.fixture
@@ -62,16 +62,9 @@ class TestFastClassify:
         assert len(_FAST_ROUTES) > 0
         for regex, intent, conf, reason in _FAST_ROUTES:
             assert regex.pattern
-            assert intent in {
-                "leave_request",
-                "policy_query",
-                "ticket_create",
-                "benefits_question",
-                "email_draft",
-                "emotional",
-                "general_query",
-                "help_request",
-            }
+            # Every fast route must resolve to a declared intent, otherwise the
+            # orchestrator has no flow or handler to dispatch it to.
+            assert intent in INTENT_LIST
             assert 0.8 <= conf <= 1.0
             assert reason.startswith("Fast-path:")
 

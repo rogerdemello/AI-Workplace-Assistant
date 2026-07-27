@@ -9,6 +9,7 @@ from .conversation_memory import ConversationMemory
 from .action import HRAction, HRActionType, HRActionStatus
 from .hr_alert import HrAlert
 from .leave_request import LeaveRequest, LeaveStatus, LeaveType
+from .employee_request import EmployeeRequest, RequestStatus, RequestType
 from .attachment import Attachment, AttachmentEntityType
 from .chat_feedback import ChatFeedback
 from .activity_event import ActivityEvent
@@ -59,6 +60,7 @@ __all__ = [
     "HRAction", "HRActionType", "HRActionStatus",
     "HrAlert",
     "LeaveRequest", "LeaveStatus", "LeaveType",
+    "EmployeeRequest", "RequestStatus", "RequestType",
     "Attachment", "AttachmentEntityType",
     "ChatFeedback",
     "ActivityEvent",

@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
 
 from .contracts import FlowStateContract
-from .flows import leave_flow, policy_flow, ticket_flow
+from .flows import (
+    appointment_flow,
+    document_flow,
+    expense_flow,
+    leave_flow,
+    policy_flow,
+    shift_change_flow,
+    ticket_flow,
+)
 
 
 class FlowValidationError(ValueError):
@@ -23,6 +32,59 @@ def _slot_value_missing(value: object) -> bool:
     return False
 
 
+#: Slots that must coerce to a calendar date, per flow.
+_DATE_SLOTS: Dict[str, set[str]] = {
+    leave_flow.FLOW_NAME: {"start_date", "end_date"},
+    shift_change_flow.FLOW_NAME: {"start_date", "end_date"},
+    appointment_flow.FLOW_NAME: {"preferred_date"},
+    expense_flow.FLOW_NAME: {"expense_date"},
+}
+
+_TIME_PATTERNS = (
+    re.compile(r"^(?P<h>\d{1,2}):(?P<m>\d{2})\s*(?P<mer>am|pm)?$", re.IGNORECASE),
+    re.compile(r"^(?P<h>\d{1,2})\s*(?P<mer>am|pm)$", re.IGNORECASE),
+)
+
+
+def coerce_time(value: Any) -> Optional[str]:
+    """Normalize '3pm', '15:00', '11:30 AM' to 24-hour HH:MM. None when unreadable."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or text.lower() == "unspecified":
+        return None
+    for pattern in _TIME_PATTERNS:
+        match = pattern.match(text)
+        if not match:
+            continue
+        hour = int(match.group("h"))
+        minute = int(match.groupdict().get("m") or 0)
+        meridiem = (match.groupdict().get("mer") or "").lower()
+        if meridiem == "pm" and hour < 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+    return None
+
+
+def coerce_amount(value: Any) -> Optional[float]:
+    """Pull a positive money value out of '2500', '₹2,500.50', 'about 900 rupees'."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if value > 0 else None
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"\d[\d,]*(?:\.\d+)?", value)
+    if not match:
+        return None
+    try:
+        amount = float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+    return amount if amount > 0 else None
+
+
 class FlowManager:
     INTENT_TO_FLOW = {
         "ticket_create": ticket_flow.FLOW_NAME,
@@ -30,7 +92,20 @@ class FlowManager:
         "leave_request": leave_flow.FLOW_NAME,
         "policy_query": policy_flow.FLOW_NAME,
         "benefits_question": policy_flow.FLOW_NAME,
+        "appointment_request": appointment_flow.FLOW_NAME,
+        "expense_claim": expense_flow.FLOW_NAME,
+        "shift_change_request": shift_change_flow.FLOW_NAME,
+        "document_request": document_flow.FLOW_NAME,
     }
+
+    #: Flows that collect slots and end in a confirm step. The orchestrator drives
+    #: these through the generic slot loop rather than a bespoke branch.
+    SLOT_FLOWS = (
+        appointment_flow.FLOW_NAME,
+        expense_flow.FLOW_NAME,
+        shift_change_flow.FLOW_NAME,
+        document_flow.FLOW_NAME,
+    )
 
     def __init__(self) -> None:
         self._definitions: Dict[str, Dict[str, Any]] = {
@@ -48,6 +123,14 @@ class FlowManager:
                 "required_fields": list(policy_flow.required_fields),
                 "steps": list(policy_flow.steps),
                 "prompts": dict(policy_flow.prompts),
+            },
+            **{
+                module.FLOW_NAME: {
+                    "required_fields": list(module.required_fields),
+                    "steps": list(module.steps),
+                    "prompts": dict(module.prompts),
+                }
+                for module in (appointment_flow, expense_flow, shift_change_flow, document_flow)
             },
         }
 
@@ -71,9 +154,15 @@ class FlowManager:
                 if not value.strip() or value.strip().lower() == "unspecified":
                     missing.append(field)
                     continue
-            if field in ("start_date", "end_date") and isinstance(payload.get(field), str):
+            if field in _DATE_SLOTS.get(flow_name, set()) and isinstance(payload.get(field), str):
                 if self._coerce_date(payload.get(field)) is None:
                     missing.append(field)
+                    continue
+            if field == "preferred_time" and coerce_time(payload.get(field)) is None:
+                missing.append(field)
+                continue
+            if field == "amount" and coerce_amount(payload.get(field)) is None:
+                missing.append(field)
         return missing
 
     def ensure_state_contract(
@@ -119,8 +208,56 @@ class FlowManager:
         
         if flow_name == ticket_flow.FLOW_NAME and step == "confirm":
             return self._build_ticket_confirm_prompt(d)
-        
+
+        if flow_name in self.SLOT_FLOWS and step == "confirm":
+            return self._build_slot_confirm_prompt(flow_name, d)
+
         return prompts.get(step, "Got it. Let me process that.")
+
+    #: Human labels for the confirm summary, per flow.
+    _CONFIRM_LABELS: Dict[str, Dict[str, str]] = {
+        appointment_flow.FLOW_NAME: {
+            "topic": "About",
+            "preferred_date": "Date",
+            "preferred_time": "Time",
+            "mode": "Mode",
+        },
+        expense_flow.FLOW_NAME: {
+            "expense_type": "Type",
+            "amount": "Amount",
+            "expense_date": "Date",
+            "description": "For",
+        },
+        shift_change_flow.FLOW_NAME: {
+            "change_type": "Request",
+            "start_date": "From",
+            "end_date": "To",
+            "reason": "Reason",
+        },
+        document_flow.FLOW_NAME: {
+            "document_type": "Document",
+            "purpose": "Purpose",
+        },
+    }
+
+    _CONFIRM_HEADERS: Dict[str, str] = {
+        appointment_flow.FLOW_NAME: "Want me to send this to HR?",
+        expense_flow.FLOW_NAME: "Want me to submit this claim?",
+        shift_change_flow.FLOW_NAME: "Want me to send this to your manager and HR?",
+        document_flow.FLOW_NAME: "Want me to request this from HR?",
+    }
+
+    def _build_slot_confirm_prompt(self, flow_name: str, data: Dict[str, Any]) -> str:
+        """Echo the collected slots back before the flow writes anything."""
+        labels = self._CONFIRM_LABELS.get(flow_name, {})
+        parts = [self._CONFIRM_HEADERS.get(flow_name, "Ready to submit this?")]
+        for field, label in labels.items():
+            value = data.get(field)
+            if _slot_value_missing(value):
+                continue
+            parts.append(f"{label}: {value}")
+        parts.append("Say yes to confirm or no to make changes.")
+        return " ".join(parts)
     
     def _build_leave_confirm_prompt(self, data: Dict[str, Any]) -> str:
         """Build confirmation prompt for leave request with collected data."""
@@ -163,12 +300,28 @@ class FlowManager:
             if value is None:
                 continue
 
-            if flow_name == leave_flow.FLOW_NAME and key in {"start_date", "end_date"}:
+            if key in _DATE_SLOTS.get(flow_name, set()):
                 parsed = self._coerce_date(value)
                 if parsed is None:
                     errors.append(f"invalid_{key}")
                     continue
                 merged[key] = parsed.isoformat()
+                continue
+
+            if flow_name == appointment_flow.FLOW_NAME and key == "preferred_time":
+                parsed_time = coerce_time(value)
+                if parsed_time is None:
+                    errors.append("invalid_preferred_time")
+                    continue
+                merged[key] = parsed_time
+                continue
+
+            if flow_name == expense_flow.FLOW_NAME and key == "amount":
+                parsed_amount = coerce_amount(value)
+                if parsed_amount is None:
+                    errors.append("invalid_amount")
+                    continue
+                merged[key] = parsed_amount
                 continue
 
             if flow_name == ticket_flow.FLOW_NAME and key == "anonymous":
@@ -189,6 +342,21 @@ class FlowManager:
                 errors.append("max_duration_exceeded")
             if start and start < date.today() - timedelta(days=1):
                 errors.append("start_date_too_far_in_past")
+
+        if flow_name == shift_change_flow.FLOW_NAME:
+            start = self._coerce_date(merged.get("start_date"))
+            end = self._coerce_date(merged.get("end_date"))
+            if start and end and end < start:
+                errors.append("end_before_start")
+            if start and end and (end - start).days + 1 > 90:
+                errors.append("max_duration_exceeded")
+            if start and start < date.today() - timedelta(days=1):
+                errors.append("start_date_too_far_in_past")
+
+        if flow_name == appointment_flow.FLOW_NAME:
+            preferred = self._coerce_date(merged.get("preferred_date"))
+            if preferred and preferred < date.today():
+                errors.append("preferred_date_in_past")
 
         return merged, errors
 
@@ -221,13 +389,20 @@ class FlowManager:
         if flow_name == ticket_flow.FLOW_NAME:
             if step == "confirm":
                 return True
+        if flow_name in self.SLOT_FLOWS:
+            if step == "confirm":
+                return True
+            if step in _DATE_SLOTS.get(flow_name, set()):
+                return not self._missing_date_slot(data, step)
+            if step == "preferred_time":
+                return coerce_time(data.get("preferred_time")) is not None
+            if step == "amount":
+                return coerce_amount(data.get("amount")) is not None
+            return not _slot_value_missing(data.get(step))
         return bool(data.get(step))
 
     def _missing_leave_date(self, data: Dict[str, Any], key: str) -> bool:
-        v = data.get(key)
-        if _slot_value_missing(v):
-            return True
-        return self._coerce_date(v) is None
+        return self._missing_date_slot(data, key)
 
     def _compute_next_step(self, flow_name: str, data: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> str:
         if flow_name == leave_flow.FLOW_NAME:
@@ -263,7 +438,67 @@ class FlowManager:
                 return "query"
             return "done"
 
+        if flow_name == appointment_flow.FLOW_NAME:
+            if _slot_value_missing(data.get("topic")):
+                return "topic"
+            if self._missing_date_slot(data, "preferred_date"):
+                return "preferred_date"
+            if self._coerce_date(data.get("preferred_date")) < date.today():
+                return "preferred_date_invalid"
+            if _slot_value_missing(data.get("preferred_time")):
+                return "preferred_time"
+            if coerce_time(data.get("preferred_time")) is None:
+                return "preferred_time_invalid"
+            if _slot_value_missing(data.get("mode")):
+                return "mode"
+            return "confirm"
+
+        if flow_name == expense_flow.FLOW_NAME:
+            if _slot_value_missing(data.get("expense_type")):
+                return "expense_type"
+            if _slot_value_missing(data.get("amount")):
+                return "amount"
+            if coerce_amount(data.get("amount")) is None:
+                return "amount_invalid"
+            if self._missing_date_slot(data, "expense_date"):
+                return "expense_date"
+            if _slot_value_missing(data.get("description")):
+                return "description"
+            return "confirm"
+
+        if flow_name == shift_change_flow.FLOW_NAME:
+            if _slot_value_missing(data.get("change_type")):
+                return "change_type"
+            if self._missing_date_slot(data, "start_date"):
+                return "start_date"
+            if self._missing_date_slot(data, "end_date"):
+                return "end_date"
+            start = self._coerce_date(data.get("start_date"))
+            end = self._coerce_date(data.get("end_date"))
+            if end < start:
+                return "end_date_invalid"
+            if (end - start).days + 1 > 90:
+                return "max_duration_exceeded"
+            if start < date.today() - timedelta(days=1):
+                return "start_date_invalid"
+            if _slot_value_missing(data.get("reason")):
+                return "reason"
+            return "confirm"
+
+        if flow_name == document_flow.FLOW_NAME:
+            if _slot_value_missing(data.get("document_type")):
+                return "document_type"
+            if _slot_value_missing(data.get("purpose")):
+                return "purpose"
+            return "confirm"
+
         return "done"
+
+    def _missing_date_slot(self, data: Dict[str, Any], key: str) -> bool:
+        value = data.get(key)
+        if _slot_value_missing(value):
+            return True
+        return self._coerce_date(value) is None
 
     def _coerce_date(self, value: Any) -> Optional[date]:
         if isinstance(value, date):
