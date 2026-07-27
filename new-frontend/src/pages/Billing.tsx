@@ -15,7 +15,14 @@ export default function Billing() {
   }, []);
 
   return (
-    <AppLayout title="Billing" subtitle="Subscription overview — demo values from the API until you plug in billing">
+    <AppLayout
+      title="Billing"
+      subtitle={
+        sub?.source === "stripe"
+          ? "Subscription overview — live from Stripe"
+          : "Subscription overview — set STRIPE_API_KEY for live data"
+      }
+    >
       <div className="px-6 lg:px-10 py-8 max-w-3xl space-y-6">
         {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
         {!loading && !sub && (
@@ -50,7 +57,7 @@ export default function Billing() {
                 <div className="text-xs text-muted-foreground uppercase tracking-[0.12em]">Renews on</div>
                 <div className="font-display text-2xl mt-2">{sub.renewsOn}</div>
                 <div className="text-xs text-muted-foreground mt-2">
-                  Est. {sub.currency} {sub.monthlyEstimate.toFixed(2)} / month (demo)
+                  Est. {sub.currency} {sub.monthlyEstimate.toFixed(2)} / month{sub.source === "stripe" ? "" : " (demo)"}
                 </div>
               </div>
             </div>

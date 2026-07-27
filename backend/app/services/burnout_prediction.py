@@ -341,6 +341,9 @@ class BurnoutPredictionService:
                     "name": user.name,
                     "risk_score": float(risk["risk_score"]),
                     "risk_level": risk["risk_level"],
+                    # BurnoutSummaryResponse.risk_scores items are BurnoutRiskResponse,
+                    # which requires `factors` — carry it through from calculate_risk.
+                    "factors": risk.get("factors", {}),
                 }
             )
 

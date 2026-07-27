@@ -229,6 +229,38 @@ def test_watermark_stops_the_same_nudge_arriving_twice(
     assert second == [], "already-seen nudge was served again"
 
 
+def test_newest_nudges_survive_the_limit(client, auth_headers, db, test_user):
+    """An employee with a long history must still receive their latest message.
+
+    Ordering ascending under a LIMIT returned the oldest N, so once someone
+    accumulated more than the limit, nothing new could ever reach them.
+    """
+    from app.models.conversation import Conversation, Message, MessageSender
+    from app.services.mark_proactive import NUDGE_INTENT_PREFIX
+
+    conversation = Conversation(user_id=test_user.id)
+    db.add(conversation)
+    db.flush()
+
+    base = utcnow_naive() - timedelta(hours=30)
+    for index in range(25):
+        db.add(
+            Message(
+                conversation_id=conversation.id,
+                sender=MessageSender.bot,
+                message_text=f"nudge number {index}",
+                intent=f"{NUDGE_INTENT_PREFIX}silent_user",
+                created_at=base + timedelta(minutes=index),
+            )
+        )
+    db.commit()
+
+    rows = client.get("/api/v1/chat/nudges/pending", headers=auth_headers).json()
+    texts = [r["text"] for r in rows]
+    assert "nudge number 24" in texts, "newest nudge was cut off by the limit"
+    assert texts == sorted(texts, key=lambda t: int(t.rsplit(" ", 1)[1])), "not chronological"
+
+
 def test_ordinary_bot_replies_are_not_served_as_nudges(client, auth_headers, test_user):
     """Only proactively-sent messages qualify — not normal conversation."""
     client.post(

@@ -19,6 +19,8 @@ interface AuthContextValue {
   session: AuthSession | null;
   /** Real API login against seeded users (see `scripts/seed_dummy_users.py`). */
   loginWithEmail: (email: string, password: string) => Promise<AuthSession | null>;
+  /** Establish a session from an already-issued access token (e.g. SSO redirect). */
+  loginWithToken: (accessToken: string) => Promise<AuthSession | null>;
   logout: () => void;
 }
 
@@ -99,9 +101,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(MARK_AUTH_INVALID_EVENT, syncLogout as EventListener);
   }, []);
 
+  const establishSessionFromToken = async (accessToken: string, fallbackEmail = ""): Promise<AuthSession | null> => {
+    if (!accessToken || typeof window === "undefined") return null;
+    const now = Date.now();
+    try {
+      window.localStorage.setItem("auth_token", accessToken);
+      const meResponse = await fetch(`${apiBaseUrl()}/api/v1/auth/me`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!meResponse.ok) {
+        window.localStorage.removeItem("auth_token");
+        return null;
+      }
+      const me = (await meResponse.json()) as { id?: string; name?: string; email?: string; role?: string };
+      const email = me.email ? String(me.email).toLowerCase() : fallbackEmail;
+      const nextSession: AuthSession = {
+        email,
+        name: me.name ? String(me.name) : email.split("@")[0],
+        role: mapApiRole(String(me.role ?? "employee")),
+        userId: me.id ? String(me.id) : undefined,
+        loginAtMs: now,
+        breakReminderAtMs: now + 2 * 60 * 60 * 1000,
+        secondBreakReminderAtMs: now + Math.round(5.5 * 60 * 60 * 1000),
+        breakReminderShownAtMs: 0,
+        secondBreakReminderShownAtMs: 0,
+      };
+      setSession(nextSession);
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSession));
+      return nextSession;
+    } catch {
+      return null;
+    }
+  };
+
   const contextValue = useMemo<AuthContextValue>(
     () => ({
       session,
+      loginWithToken: (accessToken: string) => establishSessionFromToken(accessToken),
       loginWithEmail: async (emailInput: string, password: string) => {
         const email = emailInput.trim().toLowerCase();
         const pwd = password.trim();

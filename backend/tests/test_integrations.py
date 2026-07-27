@@ -227,7 +227,7 @@ def test_hrms_sync_uses_live_path_when_provider_credentials_present(client, auth
     monkeypatch.setenv("WORKDAY_BASE_URL", "https://workday.example.com")
     monkeypatch.setenv("WORKDAY_API_TOKEN", "token-123")
 
-    def fake_live_sync(provider: str, category: str, dry_run: bool):
+    def fake_live_sync(provider: str, category: str, dry_run: bool, db=None):
         assert provider == "workday_hrms"
         assert category == "hrms"
         assert dry_run is False
@@ -261,7 +261,7 @@ def test_payroll_sync_uses_live_path_when_provider_credentials_present(client, a
     monkeypatch.setenv("ADP_BASE_URL", "https://adp.example.com")
     monkeypatch.setenv("ADP_API_TOKEN", "token-123")
 
-    def fake_live_sync(provider: str, category: str, dry_run: bool):
+    def fake_live_sync(provider: str, category: str, dry_run: bool, db=None):
         assert provider == "adp_payroll"
         assert category == "payroll"
         assert dry_run is False

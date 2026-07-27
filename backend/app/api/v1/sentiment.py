@@ -29,7 +29,7 @@ class SentimentResponse(BaseModel):
     sentiment: str
     score: float
     text: str
-    source: Optional[Literal["lexicon", "llm", "hybrid"]] = None
+    source: Optional[Literal["lexicon", "llm", "hybrid", "enhanced"]] = None
 
 
 class EmotionTagResponse(BaseModel):
