@@ -1034,10 +1034,15 @@ def get_pending_nudges(
             ConversationMessage.intent.like(f"{NUDGE_INTENT_PREFIX}%"),
             ConversationMessage.created_at > cutoff,
         )
-        .order_by(ConversationMessage.created_at.asc())
+        # Newest first for the limit, so an employee with a long history still
+        # sees their most recent messages — ordering ascending here returned the
+        # OLDEST `limit` rows, and once someone accumulated more than that, new
+        # nudges could never reach them.
+        .order_by(ConversationMessage.created_at.desc())
         .limit(limit)
         .all()
     )
+    rows.reverse()  # back to chronological for display
 
     return [
         PendingNudgeResponse(
