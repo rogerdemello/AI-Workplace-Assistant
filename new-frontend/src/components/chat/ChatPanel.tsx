@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Send, Sparkles, X, Maximize2, Minimize2, ChevronDown, Paperclip, MessageSquarePlus, Mail } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useChat, MOOD_CHOICES } from "@/contexts/ChatContext";
+import type { ChatAttachmentMeta } from "@/lib/chat-api";
 import { formatFlowStepLabel } from "@/lib/flow-metadata-ui";
 import { MessageBubble } from "./MessageBubble";
 import { cn } from "@/lib/utils";
@@ -42,9 +43,27 @@ export function ChatPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  /** Turns typed while a reply is in flight, sent in order once it lands.
+   *
+   *  Previously a send during `isSending` was dropped: the input had already
+   *  been cleared, no request went out, and nothing told the employee. In a
+   *  tool people use to raise things they would not raise elsewhere, a message
+   *  that disappears without an error is the worst failure available — they
+   *  have no reason to retry and HR never learns there was anything to hear.
+   *
+   *  Declared with the other hooks, above the `minimized` early return — a hook
+   *  below it runs only on some renders and React tears the component down. */
+  const queuedRef = useRef<Array<{ text: string; attachment: ChatAttachmentMeta | null }>>([]);
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isTyping]);
+
+  useEffect(() => {
+    if (isSending || !chatReady) return;
+    const next = queuedRef.current.shift();
+    if (next) void send(next.text, next.attachment);
+  }, [isSending, chatReady, send]);
 
   if (mode === "minimized") return null;
 
@@ -53,10 +72,23 @@ export function ChatPanel() {
   const handleSend = () => {
     const text = input.trim();
     if (!text && !selectedFile) return;
-    if (isSending) return; // Block duplicate sends
+    // Not ready means there is no conversation to send into yet — keep the
+    // text in the box rather than swallowing it.
+    if (!chatReady) return;
+
+    const attachment = selectedFile
+      ? { name: selectedFile.name, size: selectedFile.size }
+      : null;
+    const payload = text || "Please consider attached file.";
+
     setInput("");
-    void send(text || "Please consider attached file.", selectedFile ? { name: selectedFile.name, size: selectedFile.size } : null);
     setSelectedFile(null);
+
+    if (isSending) {
+      queuedRef.current.push({ text: payload, attachment });
+      return;
+    }
+    void send(payload, attachment);
   };
 
   return (
@@ -321,9 +353,13 @@ export function ChatPanel() {
               rows={1}
               className="flex-1 resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground px-2 py-1.5 max-h-32"
             />
+            {/* Deliberately not disabled on isSending/isTyping: both are
+                transient, so the button could flip disabled between a user
+                pressing it and the click dispatching, losing the turn. Sends
+                during a reply are queued instead. */}
             <button
               onClick={handleSend}
-              disabled={(!input.trim() && !selectedFile) || !chatReady || isSending || isTyping}
+              disabled={(!input.trim() && !selectedFile) || !chatReady}
               className="size-9 rounded-lg bg-ink text-primary-foreground grid place-items-center disabled:opacity-30 hover:opacity-90 transition-opacity"
               aria-label="Send"
             >
