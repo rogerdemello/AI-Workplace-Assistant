@@ -54,7 +54,13 @@ def _list_leaves_for_user(db: Session, current_user: User, status_filter: Option
 
     report_ids = [r[0] for r in db.query(User.id).filter(User.manager_id == current_user.id).all()]
     if report_ids:
-        return q.filter(LeaveRequest.user_id.in_(report_ids)).order_by(LeaveRequest.created_at.desc()).all()
+        # Include the manager's own requests — otherwise anyone with a direct
+        # report loses sight of their own leave entirely.
+        return (
+            q.filter(LeaveRequest.user_id.in_([current_user.id, *report_ids]))
+            .order_by(LeaveRequest.created_at.desc())
+            .all()
+        )
 
     return q.filter(LeaveRequest.user_id == current_user.id).order_by(LeaveRequest.created_at.desc()).all()
 
