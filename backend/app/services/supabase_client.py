@@ -35,8 +35,13 @@ def supabase_or_503():
 
     try:
         return get_supabase()
-    except RuntimeError as e:
+    except HTTPException:
+        raise
+    except Exception as e:
+        # RuntimeError (unconfigured) or any client-construction failure
+        # (e.g. SupabaseException "Invalid API key") → degrade to a clean 503
+        # rather than a 500, so callers can surface "service unavailable".
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(e),
+            detail=str(e) or "Supabase backend is unavailable.",
         ) from e

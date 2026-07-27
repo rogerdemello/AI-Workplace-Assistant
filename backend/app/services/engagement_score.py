@@ -113,7 +113,7 @@ class EngagementScore:
         
         participated = self.db.query(SurveyResponse).filter(
             SurveyResponse.user_id == user_id,
-            SurveyResponse.submitted_at >= cutoff
+            SurveyResponse.created_at >= cutoff
         ).count()
         
         participation_rate = participated / len(surveys) if surveys else 0
