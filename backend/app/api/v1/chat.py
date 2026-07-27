@@ -873,10 +873,32 @@ def stream_respond_to_message(
                     raise TimeoutError("stream token timeout")
         except Exception:
             logger.warning("Token stream failed/timed out, reverting to buffered response", exc_info=True)
-            if intent in {"policy_query", "benefits_question"}:
-                buffered = smart_service._handle_policy_query(request.message)
-            else:
-                buffered = smart_service._handle_general_query(request.message, sentiment=sentiment, mode=mode)
+            try:
+                if intent in {"policy_query", "benefits_question"}:
+                    buffered = smart_service._handle_policy_query(request.message)
+                else:
+                    buffered = smart_service._handle_general_query(
+                        request.message, sentiment=sentiment, mode=mode
+                    )
+            except Exception:
+                # The buffered path calls the model too, so when the provider is
+                # unreachable it fails exactly like the stream did. Letting that
+                # escape kills the SSE response mid-flight ("No response
+                # returned") and the user's message vanishes with no reply.
+                # Degrade to a plain apology instead of dropping the turn.
+                metrics.increment("chat_reply_unavailable_total", {"intent": intent})
+                logger.error(
+                    "event=chat_reply_unavailable intent=%s — model unreachable on "
+                    "both stream and buffered paths",
+                    intent,
+                    exc_info=True,
+                )
+                buffered = (
+                    "Sorry — I can't reach my language service right now, so I "
+                    "can't answer that properly. Your message is saved. Please "
+                    "try again in a moment, or raise a ticket and HR will pick "
+                    "it up."
+                )
             accumulated = buffered
             yield _event("token", {"text": accumulated})
 
