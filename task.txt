@@ -80,7 +80,18 @@ A. Sentiment & signals (core product)
        trend, risk and top_emotion move. Covered by integration tests, not by
        an observed staging run.
 
-A2. Composer dropping sends — FIXED
+A2. Composer dropping sends — no longer silent; queueing still open
+   [ ] Sends during an in-flight reply are refused, not queued. The text stays
+       in the composer so the employee can see it did not go and press again.
+       Three attempts to queue the turn instead all regressed in CI — a stale
+       closure read, a status ref that stopped matching reality, and an effect
+       that missed its trigger — each stranding the very message the queue was
+       meant to protect. The queue lives in a ref (it cannot trigger renders),
+       and bridging that to React state is where all three went wrong.
+       Whoever picks this up: reproduce at CI speed, not locally. Every broken
+       version passed locally.
+
+A2b. Composer dropping sends silently — FIXED
    [x] Sends issued while a reply was in flight were swallowed: the input had
        already cleared, no request went out, nothing told the employee. Now
        queued and dispatched in order; the button is no longer disabled on

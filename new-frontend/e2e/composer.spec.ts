@@ -18,7 +18,7 @@ async function loginAs(page: Page, who: "Employee" | "HR") {
   await page.waitForURL(/\/(employee|dashboard|manager)/, { timeout: 15000 });
 }
 
-test("messages typed while a reply is in flight are not lost", async ({ page }) => {
+test("a send that cannot go through leaves the text in the composer", async ({ page }) => {
   test.setTimeout(180_000);
 
   await loginAs(page, "Employee");
@@ -36,22 +36,28 @@ test("messages typed while a reply is in flight are not lost", async ({ page }) 
   const stamp = Date.now();
   const first = `first probe ${stamp}`;
   const second = `second probe ${stamp}`;
-  const third = `third probe ${stamp}`;
 
-  // Fire three turns back to back with no wait between them. Before the queue,
-  // everything after the first was swallowed.
+  // First turn goes out normally.
   await box.fill(first);
   await box.press("Enter");
+  await expect(page.getByText(first, { exact: false }).last()).toBeVisible({ timeout: 60_000 });
+
+  // Immediately type another while the reply may still be in flight. Whatever
+  // happens, the message must not vanish: either it sends, or it is still
+  // sitting in the composer where the employee can see it and press again.
   await box.fill(second);
   await box.press("Enter");
-  await box.fill(third);
-  await box.press("Enter");
 
-  for (const text of [first, second, third]) {
-    await expect(page.getByText(text, { exact: false }).last()).toBeVisible({
-      timeout: 90_000,
-    });
-  }
+  await expect
+    .poll(
+      async () => {
+        const stillTyped = (await box.inputValue()).includes(second);
+        const sent = await page.getByText(second, { exact: false }).count();
+        return stillTyped || sent > 0;
+      },
+      { timeout: 60_000, message: "second message was neither sent nor left in the composer" },
+    )
+    .toBe(true);
 });
 
 test("the composer clears only once a send is actually accepted", async ({ page }) => {
