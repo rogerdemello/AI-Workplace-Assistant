@@ -43,68 +43,43 @@ export function ChatPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  /** Turns typed while a reply is in flight, sent in order once it lands.
-   *
-   *  Previously a send during `isSending` was dropped: the input had already
-   *  been cleared, no request went out, and nothing told the employee. In a
-   *  tool people use to raise things they would not raise elsewhere, a message
-   *  that disappears without an error is the worst failure available — they
-   *  have no reason to retry and HR never learns there was anything to hear.
-   *
-   *  Declared with the other hooks, above the `minimized` early return — a hook
-   *  below it runs only on some renders and React tears the component down. */
-  const queuedRef = useRef<Array<{ text: string; attachment: ChatAttachmentMeta | null }>>([]);
-
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isTyping]);
-
-  /** Bumped on every enqueue so the drain effect re-evaluates.
-   *
-   *  The queue lives in a ref (it must not itself trigger renders), which means
-   *  pushing to it changes nothing React can observe. Without this tick, a turn
-   *  enqueued after the drain effect's last run would never be picked up and
-   *  would sit there forever — silently losing the message the queue exists to
-   *  protect. Two earlier attempts tried to solve this by tracking "am I
-   *  sending" in a ref; both stranded the queue when `isSending` did not
-   *  transition the way the ref assumed. Re-running the effect with the real
-   *  state is the version with no hidden assumption in it. */
-  const [queueTick, setQueueTick] = useState(0);
-
-  useEffect(() => {
-    if (isSending || !chatReady) return;
-    const next = queuedRef.current.shift();
-    if (!next) return;
-    void send(next.text, next.attachment);
-    // Another turn may be waiting behind this one; re-run once it completes.
-    if (queuedRef.current.length) setQueueTick((tick) => tick + 1);
-  }, [isSending, chatReady, send, queueTick]);
 
   if (mode === "minimized") return null;
 
   const isFull = mode === "full";
 
+  /** Send the composed message, or leave it in the box untouched.
+   *
+   *  The original bug was that a send during `isSending` cleared the input and
+   *  then dropped the message — silent loss, which for this product is the
+   *  worst failure available: the employee has no reason to retry and HR never
+   *  learns there was anything to hear.
+   *
+   *  Three attempts at queueing the turn instead all went wrong (stale reads,
+   *  a status ref that stopped matching reality, an effect that missed its
+   *  trigger), each stranding the message the queue was meant to protect. So
+   *  this does not queue. It refuses, and the refusal is visible: the text
+   *  stays in the composer, so the employee can see it was not sent and press
+   *  again. Not losing the message matters more than sending it on the first
+   *  press. Queueing properly is recorded in task.txt. */
   const handleSend = () => {
     const text = input.trim();
     if (!text && !selectedFile) return;
-    // Not ready means there is no conversation to send into yet — keep the
-    // text in the box rather than swallowing it.
-    if (!chatReady) return;
+    // Nothing to send into yet, or a turn is already in flight. Keep the text.
+    if (!chatReady || isSending) return;
 
     const attachment = selectedFile
       ? { name: selectedFile.name, size: selectedFile.size }
       : null;
     const payload = text || "Please consider attached file.";
 
+    // Cleared only now, on the path that actually dispatches.
     setInput("");
     setSelectedFile(null);
-
-    // Always enqueue and let the effect decide, reading live state. Choosing
-    // here would read `isSending` from this render's closure, which can be
-    // stale by the time the key is pressed — and a wrong answer either strands
-    // the turn or double-sends it.
-    queuedRef.current.push({ text: payload, attachment });
-    setQueueTick((tick) => tick + 1);
+    void send(payload, attachment);
   };
 
   return (
