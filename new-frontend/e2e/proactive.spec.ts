@@ -124,13 +124,24 @@ test("employee books an HR appointment by chatting", async ({ page }) => {
   const say = async (message: string, expectReply: RegExp) => {
     await box.fill(message);
     await expect(box).toHaveValue(message, { timeout: 5_000 });
-    // Enabled only with text present AND the conversation ready, so assert it
-    // after filling — it doubles as the readiness gate.
     await expect(send).toBeEnabled({ timeout: 30_000 });
-    await box.press("Enter");
-    // A send issued while the previous reply is still settling is queued, so
-    // its bubble renders when the queue drains rather than immediately. That
-    // is the intended behaviour — budget for it instead of racing it.
+
+    // The composer refuses a send while the previous turn is still in flight
+    // and leaves the text in the box — so an empty box is the precise signal
+    // that this turn was accepted. Press again while it isn't, which is what a
+    // user seeing their text still sitting there would do. The Send button is
+    // no longer disabled during sending, so it cannot be used as the gate.
+    await expect
+      .poll(
+        async () => {
+          if ((await box.inputValue()) === "") return true;
+          await box.press("Enter");
+          return false;
+        },
+        { timeout: 60_000, message: `composer never accepted: ${message}` },
+      )
+      .toBe(true);
+
     await expect(page.getByText(message, { exact: false }).last()).toBeVisible({
       timeout: 60_000,
     });
