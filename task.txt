@@ -6,13 +6,14 @@ and “world class” quality. Update dates/owners as you ship.
 
 Legend: [x] done   [~] partly done (detail inline)   [ ] not started
 
-Last reviewed: 2026-07-28 (main)
+Last reviewed: 2026-07-28 (main, at a861553 — PR #12 merged, CI green)
 
 --------------------------------------------------------------------------------
 0. STATE OF PLAY — read this before picking anything up
 --------------------------------------------------------------------------------
 
-Shipped on this branch (not yet merged, CI has not run on it):
+Everything described below is merged to main and CI is green on it (PRs #2-#12).
+Nothing is waiting on a branch. Shipped:
    - Conversational requests: appointments, expenses, shift changes/WFH and
      document requests, on the shared employee_requests table, with an HR
      review page. Leave and tickets already existed.
@@ -25,6 +26,10 @@ Shipped on this branch (not yet merged, CI has not run on it):
    - Confidentiality fixes on manager surfaces (see C/security below).
    - Alembic owns the Postgres schema; create_all is SQLite-only.
    - /metrics endpoint and real, tunable alert thresholds.
+   - Idempotent, replayable sentiment writes plus scripts/reconcile_sentiment.py
+     (PR #12).
+   - Score-freshness tags on the Employees list (PR #12).
+   - The retention mechanism, with every period left at 0 (PR #12).
 
 Resolved since the last review:
    1. Everything is merged to main and CI is green (PRs #2-#5). CI itself had
@@ -39,6 +44,16 @@ Resolved since the last review:
    4. CI timing settled: the full suite runs in ~10.5 min on CI (not the ~32
       min seen locally — a local run hits a reachable endpoint that 401s slowly,
       where CI fails DNS instantly). Timeout raised to 45 min for headroom.
+   5. e2e no longer points at an unreachable model endpoint. AI_USE_MOCK makes
+      the in-process stub reachable by configuration and the browser-e2e job
+      sets it, so CI exercises normal operation rather than a permanent-outage
+      path. The suite went from 2.2m to 1.4m, and the old latency had been
+      actively masking the 500ms debounce bug. Deliberately NOT applied to
+      backend-tests, which assert the lexicon and keyword fallback paths that
+      only run when the model is unavailable.
+   6. The previously stranded files are committed: .env.example (now documenting
+      all 75 Settings fields) and new-frontend/e2e/, including
+      playwright.config.ts and all four specs.
 
 Found while building risk explainability:
    [x] db/schema.sql was missing 9 of 53 model tables (audit_logs,
@@ -55,17 +70,10 @@ Found while building risk explainability:
 Still blocking a confident production claim:
    1. Nothing has been verified against a realistic environment. Every "it
       works" here means tests and a local stack, never staging under load.
-   2. No data retention policy (see C).
-   3. e2e points at an unreachable model endpoint, so CI exercises a permanent
-      -outage path rather than normal operation. Stubbing the AI client would
-      be faster and more representative.
-
-Stranded by the uncommitted work above, fix when it is resolved:
-   - .env.example additions (DB_CREATE_ALL, alert thresholds) are written but
-     uncommitted, because that file also carries someone else's pending edits.
-     The settings themselves ARE committed, with working defaults in config.py.
-   - new-frontend/e2e/ is entirely untracked, including playwright.config.ts
-     and the proactive.spec.ts added here.
+   2. Retention periods are unset, so nothing is ever deleted (see C). The
+      mechanism now exists; the numbers are a business decision.
+   3. No agreed p95 budget for the chat hot path. This blocks the load test
+      rather than following it — without a target the run cannot fail.
 
 --------------------------------------------------------------------------------
 1. WHAT NEEDS TO BE DONE
@@ -230,9 +238,11 @@ Accuracy & fairness
    - Multilingual support; test for bias across regions and roles. Not started.
 
 Reliability
-   - Idempotent pipeline writes; dead-letter queue for failed processing;
-     replay jobs. Not started — failures are now counted and logged, but a
-     failed message is still lost rather than retried.
+   - Idempotent pipeline writes: DONE (application guard plus a partial unique
+     index on sentiment_logs.message_id), so a replay cannot double-count.
+   - Replay job: DONE manually, via scripts/reconcile_sentiment.py.
+   - Dead-letter queue: not started. A failed write is counted, logged and
+     recoverable by re-running reconcile, but nothing retries it automatically.
 
 Privacy & compliance
    - Minimize stored raw text; prefer aggregates; clear retention; DPIA-ready
