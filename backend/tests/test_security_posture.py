@@ -107,3 +107,17 @@ def test_contact_details_are_masked_for_logs(raw):
 )
 def test_masking_does_not_eat_ordinary_log_lines(raw):
     assert mask_pii(raw) == raw
+
+
+def test_ai_mock_is_off_by_default():
+    """The stub must never be reachable without an explicit opt-in.
+
+    It answers with canned text, so a deployment that picked it up by accident
+    would look healthy while giving every employee the same fabricated reply.
+    """
+    from app.ai_client import get_ai_client
+    from app.ai_client.mock import MockAzureOpenAIClient
+    from app.config import Settings
+
+    assert Settings().AI_USE_MOCK is False
+    assert not isinstance(get_ai_client(), MockAzureOpenAIClient)
