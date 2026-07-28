@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:your-password@db.your-project.supabase.co:5432/postgres?sslmode=require"
     REDIS_URL: str = "redis://localhost:6379"
     AZURE_OPENAI_API_KEY: str = "mock-key"
+    # Serve every model call from the deterministic in-process stub instead of
+    # calling Azure. Intended for browser end-to-end runs: pointing them at an
+    # unreachable endpoint means each turn pays the full retry timeout before
+    # falling back, which makes the suite slow and timing-sensitive for reasons
+    # that have nothing to do with the product. Default off; opt in explicitly.
+    AI_USE_MOCK: bool = False
     AZURE_OPENAI_ENDPOINT: str = "https://mock.openai.azure.com"
     AZURE_OPENAI_DEPLOYMENT: str = "gpt-4"
     # Optional faster/cheaper deployment (e.g. gpt-4o-mini) used for streaming
