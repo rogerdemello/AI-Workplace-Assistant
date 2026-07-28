@@ -22,6 +22,9 @@ export interface Employee {
   riskTopFactors?: string[];
   /** How much data the score rests on: low/medium/high_confidence. */
   riskConfidenceBand?: string;
+  /** ISO timestamp of the most recent chat sentiment. A score that has not
+   *  moved in weeks looks identical to a fresh one without this. */
+  sentimentLastUpdatedAt?: string;
   spikeAlert?: boolean;
   silentRisk?: boolean;
   topTopic?: string;

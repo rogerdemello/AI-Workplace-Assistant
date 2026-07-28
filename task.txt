@@ -123,9 +123,12 @@ B. HR visibility & trust
        endpoints verified against app/api/v1, plus the debugging traps: chat
        uses the streaming endpoint, transcripts restore from local storage,
        conversation_id must be threaded, the two SSE streams are role-specific).
-   [~] Signal freshness in the UI. The API exposes last_chat_sentiment_at and
-       the dashboard bundle carries it; surfacing it consistently in the UI is
-       still open. Privacy-safe: no raw text.
+   [x] Signal freshness in the UI. The Employees list — where HR triages —
+       now tags a score "Nd stale" past a week and "30d+ stale" past a month,
+       alongside the existing "thin data" tag. Previously a score that had not
+       moved in weeks looked identical to a fresh one, so HR could act on a
+       number that predated whatever prompted them to look. The Dashboard
+       already showed this for high-risk rows. Privacy-safe: no raw text.
 
 C. Quality & operations
    [~] Load test chat + analytics under expected concurrent users.
