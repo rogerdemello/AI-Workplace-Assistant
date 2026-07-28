@@ -99,7 +99,7 @@ test("HR's decision reaches the employee's chat after they return", async ({
 test("employee books an HR appointment by chatting", async ({ page }) => {
   // Six conversational turns, each a backend round-trip. Generous because a
   // dev backend without real Azure credentials retries before falling back.
-  test.setTimeout(420_000);
+  test.setTimeout(600_000);
 
   await loginAs(page, "Employee");
   await page.goto("/chat");
@@ -128,10 +128,13 @@ test("employee books an HR appointment by chatting", async ({ page }) => {
     // after filling — it doubles as the readiness gate.
     await expect(send).toBeEnabled({ timeout: 30_000 });
     await box.press("Enter");
+    // A send issued while the previous reply is still settling is queued, so
+    // its bubble renders when the queue drains rather than immediately. That
+    // is the intended behaviour — budget for it instead of racing it.
     await expect(page.getByText(message, { exact: false }).last()).toBeVisible({
-      timeout: 30_000,
+      timeout: 60_000,
     });
-    await expect(page.getByText(expectReply).last()).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByText(expectReply).last()).toBeVisible({ timeout: 60_000 });
   };
 
   const day = new Date();

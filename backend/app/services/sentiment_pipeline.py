@@ -407,14 +407,47 @@ class SentimentPipelineService:
         inactivity_score = _clamp_score((inactive_days / 10.0) * 100.0)
         complaint_frequency = _clamp_score((complaint_count_7 / 5.0) * 100.0)
         trend_drop = _clamp_score(max(0, -delta) * 4.0)
+        negativity_component = (100 - weighted_sentiment) * 0.4
+        inactivity_component = inactivity_score * 0.2
+        complaint_component = complaint_frequency * 0.2
+        trend_component = trend_drop * 0.2
         risk = _clamp_score(
-            ((100 - weighted_sentiment) * 0.4)
-            + (inactivity_score * 0.2)
-            + (complaint_frequency * 0.2)
-            + (trend_drop * 0.2)
+            negativity_component
+            + inactivity_component
+            + complaint_component
+            + trend_component
         )
-        if repeated_negative:
-            risk = _clamp_score(risk + 8)
+        sustained_bump = 8 if repeated_negative else 0
+        if sustained_bump:
+            risk = _clamp_score(risk + sustained_bump)
+
+        # Keep the reasoning, not just the verdict. `contributions` are points
+        # of the final score so they can be read as "inactivity is 20 of this
+        # 46" — the distinction between someone on holiday and someone in
+        # trouble. `evidence` is the raw input each one came from, and
+        # `messages_30d` is how much data the whole thing rests on: a score
+        # built on two messages deserves far less weight than one built on 200.
+        risk_factors = {
+            "contributions": {
+                "negativity": round(negativity_component, 1),
+                "inactivity": round(inactivity_component, 1),
+                "complaints": round(complaint_component, 1),
+                "trend_drop": round(trend_component, 1),
+                "sustained_negative_bump": sustained_bump,
+            },
+            "evidence": {
+                "sentiment_score": int(weighted_sentiment),
+                "days_since_last_message": int(inactive_days),
+                "complaint_signals_7d": int(complaint_count_7),
+                "negative_turns_in_window": int(negative_turns_sustained),
+                "trend_delta": int(delta),
+            },
+            "confidence": {
+                "messages_30d": len(rows_30),
+                "messages_7d": len(rows_7),
+            },
+            "computed_at": now.isoformat(),
+        }
 
         try:
             engagement = _clamp_score(EngagementScore(self.db).calculate_user_engagement(employee_id, days=30)["engagement_score"])
@@ -432,6 +465,7 @@ class SentimentPipelineService:
         row.mental_health_score = mental_health
         row.trend_delta = delta
         row.trend_label = trend
+        row.risk_factors = risk_factors
         row.last_updated = now
         self.db.commit()
         self.db.refresh(row)
