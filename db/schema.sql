@@ -1,18 +1,18 @@
 -- ============================================================================
--- REFERENCE ONLY — this file does NOT produce a working database.
+-- REFERENCE ONLY — do not use this as an install path.
 --
 -- Alembic is the single source of truth for the Postgres schema. Provision with:
 --     cd backend && alembic upgrade head
 --
--- This snapshot is missing 9 tables that were added by migrations and never
--- back-ported here, including the core of the sentiment product:
---     audit_logs, automation_rules, employee_scores, hr_notifications,
---     message_signals, offboarding_tasks, sentiment_logs, ticket_action_logs,
---     whatsapp_links
+-- All 53 model tables now appear here. Nine of them were missing entirely until
+-- recently — including sentiment_logs and employee_scores, the core of the
+-- sentiment product — so bootstrapping from this file gave you a database where
+-- chat worked and every HR dashboard was silently empty.
 --
--- Bootstrapping from this file alone gives you a database where chat works and
--- every HR dashboard is empty, which is a confusing way to discover the
--- problem. Keep it for reading table shapes; do not run it as an install path.
+-- It is still reference material rather than an install path: the generated
+-- section at the end lacks the CHECK constraints and triggers the curated
+-- sections carry, and only migrations are ever actually applied. Verify against
+-- alembic before trusting anything here.
 -- ============================================================================
 
 BEGIN;
@@ -1048,5 +1048,228 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER trg_employee_requests_updated_at
 BEFORE UPDATE ON employee_requests
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- BEGIN generated-from-models section
+-- ============================================================================
+-- Tables introduced by Alembic migrations, generated from the SQLAlchemy models
+-- so this file is at least structurally complete. Shapes match what the app
+-- expects, but these lack the hand-written CHECK constraints and triggers the
+-- curated sections above carry.
+--
+-- Alembic is still the source of truth — see the header of this file.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+	id UUID NOT NULL, 
+	actor_id UUID, 
+	method VARCHAR(8) NOT NULL, 
+	path VARCHAR(500) NOT NULL, 
+	target_type VARCHAR(64), 
+	target_id VARCHAR(64), 
+	payload_sha256 VARCHAR(64), 
+	status_code INTEGER, 
+	ip VARCHAR(64), 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(actor_id) REFERENCES users (id)
+);
+
+CREATE INDEX ix_audit_logs_actor_id ON audit_logs (actor_id);
+
+CREATE INDEX ix_audit_logs_created_at ON audit_logs (created_at);
+
+CREATE INDEX ix_audit_logs_path ON audit_logs (path);
+
+CREATE INDEX ix_audit_logs_target_id ON audit_logs (target_id);
+
+CREATE INDEX ix_audit_logs_target_type ON audit_logs (target_type);
+
+CREATE TABLE IF NOT EXISTS automation_rules (
+	id UUID NOT NULL, 
+	name VARCHAR(120) NOT NULL, 
+	event_type VARCHAR(60) NOT NULL, 
+	enabled BOOLEAN NOT NULL, 
+	conditions JSON NOT NULL, 
+	actions JSON NOT NULL, 
+	created_by UUID, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	updated_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(created_by) REFERENCES users (id)
+);
+
+CREATE INDEX ix_automation_rules_created_at ON automation_rules (created_at);
+
+CREATE INDEX ix_automation_rules_created_by ON automation_rules (created_by);
+
+CREATE INDEX ix_automation_rules_enabled ON automation_rules (enabled);
+
+CREATE INDEX ix_automation_rules_event_type ON automation_rules (event_type);
+
+CREATE INDEX ix_automation_rules_name ON automation_rules (name);
+
+CREATE INDEX ix_automation_rules_updated_at ON automation_rules (updated_at);
+
+CREATE TABLE IF NOT EXISTS employee_scores (
+	employee_id UUID NOT NULL, 
+	sentiment_score INTEGER NOT NULL, 
+	engagement_score INTEGER NOT NULL, 
+	risk_score INTEGER NOT NULL, 
+	mental_health_score INTEGER NOT NULL, 
+	trend_delta INTEGER NOT NULL, 
+	trend_label VARCHAR(20) NOT NULL, 
+	risk_factors JSONB, 
+	last_updated TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (employee_id), 
+	FOREIGN KEY(employee_id) REFERENCES users (id)
+);
+
+CREATE INDEX ix_employee_scores_employee_id ON employee_scores (employee_id);
+
+CREATE TABLE IF NOT EXISTS hr_notifications (
+	id UUID NOT NULL, 
+	ticket_id UUID, 
+	actor_id UUID, 
+	title VARCHAR(180) NOT NULL, 
+	body TEXT, 
+	notification_type VARCHAR(48) NOT NULL, 
+	severity VARCHAR(24) NOT NULL, 
+	is_read BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	read_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(ticket_id) REFERENCES tickets (id), 
+	FOREIGN KEY(actor_id) REFERENCES users (id)
+);
+
+CREATE INDEX ix_hr_notifications_actor_id ON hr_notifications (actor_id);
+
+CREATE INDEX ix_hr_notifications_created_at ON hr_notifications (created_at);
+
+CREATE INDEX ix_hr_notifications_is_read ON hr_notifications (is_read);
+
+CREATE INDEX ix_hr_notifications_notification_type ON hr_notifications (notification_type);
+
+CREATE INDEX ix_hr_notifications_severity ON hr_notifications (severity);
+
+CREATE INDEX ix_hr_notifications_ticket_id ON hr_notifications (ticket_id);
+
+CREATE TABLE IF NOT EXISTS message_signals (
+	id UUID NOT NULL, 
+	employee_id UUID NOT NULL, 
+	message_id UUID NOT NULL, 
+	emotion VARCHAR(50) NOT NULL, 
+	topic VARCHAR(80) NOT NULL, 
+	severity VARCHAR(20) NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(employee_id) REFERENCES users (id), 
+	FOREIGN KEY(message_id) REFERENCES messages (id)
+);
+
+CREATE INDEX ix_message_signals_created_at ON message_signals (created_at);
+
+CREATE INDEX ix_message_signals_emotion ON message_signals (emotion);
+
+CREATE INDEX ix_message_signals_employee_id ON message_signals (employee_id);
+
+CREATE INDEX ix_message_signals_message_id ON message_signals (message_id);
+
+CREATE INDEX ix_message_signals_severity ON message_signals (severity);
+
+CREATE INDEX ix_message_signals_topic ON message_signals (topic);
+
+CREATE TABLE IF NOT EXISTS offboarding_tasks (
+	id UUID NOT NULL, 
+	user_id UUID NOT NULL, 
+	title VARCHAR(200) NOT NULL, 
+	kind VARCHAR(32) NOT NULL, 
+	completed BOOLEAN NOT NULL, 
+	completed_at TIMESTAMP WITHOUT TIME ZONE, 
+	due_date DATE, 
+	notes TEXT, 
+	assigned_to UUID, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES users (id), 
+	FOREIGN KEY(assigned_to) REFERENCES users (id)
+);
+
+CREATE INDEX ix_offboarding_tasks_assigned_to ON offboarding_tasks (assigned_to);
+
+CREATE INDEX ix_offboarding_tasks_completed ON offboarding_tasks (completed);
+
+CREATE INDEX ix_offboarding_tasks_user_completed ON offboarding_tasks (user_id, completed);
+
+CREATE INDEX ix_offboarding_tasks_user_id ON offboarding_tasks (user_id);
+
+CREATE TABLE IF NOT EXISTS sentiment_logs (
+	id UUID NOT NULL, 
+	employee_id UUID NOT NULL, 
+	conversation_id UUID, 
+	message_id UUID NOT NULL, 
+	score INTEGER NOT NULL, 
+	label VARCHAR(20) NOT NULL, 
+	emotion VARCHAR(50) NOT NULL, 
+	analysis_source VARCHAR(16), 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(employee_id) REFERENCES users (id), 
+	FOREIGN KEY(conversation_id) REFERENCES conversations (id), 
+	FOREIGN KEY(message_id) REFERENCES messages (id)
+);
+
+CREATE INDEX ix_sentiment_logs_analysis_source ON sentiment_logs (analysis_source);
+
+CREATE INDEX ix_sentiment_logs_conversation_id ON sentiment_logs (conversation_id);
+
+CREATE INDEX ix_sentiment_logs_created_at ON sentiment_logs (created_at);
+
+CREATE INDEX ix_sentiment_logs_employee_id ON sentiment_logs (employee_id);
+
+CREATE INDEX ix_sentiment_logs_label ON sentiment_logs (label);
+
+CREATE INDEX ix_sentiment_logs_message_id ON sentiment_logs (message_id);
+
+CREATE INDEX ix_sentiment_logs_score ON sentiment_logs (score);
+
+CREATE TABLE IF NOT EXISTS ticket_action_logs (
+	id UUID NOT NULL, 
+	ticket_id UUID NOT NULL, 
+	actor_id UUID, 
+	action_type VARCHAR(64) NOT NULL, 
+	details TEXT, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(ticket_id) REFERENCES tickets (id), 
+	FOREIGN KEY(actor_id) REFERENCES users (id)
+);
+
+CREATE INDEX ix_ticket_action_logs_action_type ON ticket_action_logs (action_type);
+
+CREATE INDEX ix_ticket_action_logs_actor_id ON ticket_action_logs (actor_id);
+
+CREATE INDEX ix_ticket_action_logs_created_at ON ticket_action_logs (created_at);
+
+CREATE INDEX ix_ticket_action_logs_ticket_id ON ticket_action_logs (ticket_id);
+
+CREATE TABLE IF NOT EXISTS whatsapp_links (
+	user_id UUID NOT NULL, 
+	phone_e164 VARCHAR(32), 
+	pending_code VARCHAR(32), 
+	status VARCHAR(16) NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	linked_at TIMESTAMP WITHOUT TIME ZONE, 
+	expires_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (user_id), 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX ix_whatsapp_links_pending_code ON whatsapp_links (pending_code);
+
+CREATE UNIQUE INDEX ix_whatsapp_links_phone_e164 ON whatsapp_links (phone_e164);
+-- END generated-from-models section
 
 COMMIT;

@@ -41,13 +41,16 @@ Resolved since the last review:
       where CI fails DNS instantly). Timeout raised to 45 min for headroom.
 
 Found while building risk explainability:
-   [ ] db/schema.sql is a stale partial snapshot — 9 of 53 model tables are
-       missing from it (audit_logs, automation_rules, employee_scores,
-       hr_notifications, message_signals, offboarding_tasks, sentiment_logs,
-       ticket_action_logs, whatsapp_links). Bootstrapping from it gives a
-       database where chat works and every HR dashboard is empty. Marked
-       REFERENCE ONLY with a pointer to alembic; regenerating it properly from
-       a live pg_dump is still open.
+   [x] db/schema.sql was missing 9 of 53 model tables (audit_logs,
+       automation_rules, employee_scores, hr_notifications, message_signals,
+       offboarding_tasks, sentiment_logs, ticket_action_logs, whatsapp_links),
+       so bootstrapping from it gave a database where chat worked and every HR
+       dashboard was silently empty. All 53 now present — the nine were
+       generated from the SQLAlchemy models and appended in a marked section.
+       Still REFERENCE ONLY: the generated section lacks the CHECK constraints
+       and triggers the curated sections carry, and only migrations are ever
+       applied. A pg_dump-based regeneration would be better; pg_dump was not
+       available on this machine.
 
 Still blocking a confident production claim:
    1. Nothing has been verified against a realistic environment. Every "it
