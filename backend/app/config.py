@@ -129,6 +129,20 @@ class Settings(BaseSettings):
     # until explicitly enabled. Fails open (allows the nudge) on any LLM error.
     NUDGE_AI_GATING_ENABLED: bool = False
 
+    # ---- Data retention -------------------------------------------------
+    # All disabled by default (0 = keep forever), because deleting employee
+    # records is a decision for the business and its lawyers, not a default
+    # someone inherits from a config file. See backend/docs/DATA_RETENTION.md.
+    #
+    # The useful shape is to expire the words while keeping the scores: HR
+    # keeps the trends it acts on, and what an employee actually typed stops
+    # existing. Nothing runs automatically — scripts/apply_retention.py does
+    # the work, so deletion is always someone's explicit decision.
+    RETENTION_CHAT_MESSAGES_DAYS: int = 0
+    RETENTION_SENTIMENT_LOGS_DAYS: int = 0
+    RETENTION_AUDIT_LOGS_DAYS: int = 0
+    RETENTION_ANONYMOUS_FEEDBACK_DAYS: int = 0
+
     SUPABASE_URL: Optional[str] = None
     SUPABASE_SERVICE_KEY: Optional[str] = None
     SUPABASE_KEY: Optional[str] = None
