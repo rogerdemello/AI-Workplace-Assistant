@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class KPIResponse(BaseModel):
@@ -65,6 +65,9 @@ class EmployeeInsightResponse(BaseModel):
     risk_confidence: Optional[float] = None
     risk_calibration_band: Optional[str] = None
     risk_top_factors: Optional[List[str]] = None
+    #: Full breakdown behind risk_score — contributions in points, the raw
+    #: evidence each came from, and how many messages it rests on.
+    risk_factors: Optional[Dict[str, Any]] = None
     trend: str = "stable"
     delta: int = 0
     risk_label: str = "Low"

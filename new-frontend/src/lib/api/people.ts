@@ -79,6 +79,8 @@ type AnalyticsAugment = {
   complaints5d: number;
   shortTermTrend?: number;
   longTermTrend?: number;
+  riskTopFactors?: string[];
+  riskConfidenceBand?: string;
 };
 
 function analyticsAugmentFromRow(row: Record<string, unknown>): AnalyticsAugment {
@@ -102,6 +104,12 @@ function analyticsAugmentFromRow(row: Record<string, unknown>): AnalyticsAugment
     complaints5d: Number(row.complaints_5d ?? 0),
     shortTermTrend: row.short_term_trend != null ? Number(row.short_term_trend) : undefined,
     longTermTrend: row.long_term_trend != null ? Number(row.long_term_trend) : undefined,
+    // What actually drives the risk score, so a number built from silence is
+    // distinguishable from one built from distress.
+    riskTopFactors: Array.isArray(row.risk_top_factors)
+      ? row.risk_top_factors.map(String).filter(Boolean)
+      : undefined,
+    riskConfidenceBand: row.risk_calibration_band ? String(row.risk_calibration_band) : undefined,
   };
 }
 
@@ -114,6 +122,8 @@ function mergeAnalyticsIntoEmployee(base: Employee, aug: AnalyticsAugment): Empl
     sentimentDelta: aug.delta,
     riskScore: aug.risk,
     riskLabel: aug.riskLabel,
+    riskTopFactors: aug.riskTopFactors?.length ? aug.riskTopFactors : undefined,
+    riskConfidenceBand: aug.riskConfidenceBand,
     narrative: aug.narrative,
     spikeAlert: aug.spikeAlert || undefined,
     silentRisk: aug.silentRisk || undefined,

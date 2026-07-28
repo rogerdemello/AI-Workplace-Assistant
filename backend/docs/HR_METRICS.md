@@ -65,9 +65,20 @@ Higher means more attention warranted. A weighted sum:
 
 Silence contributes 20% of risk, and someone who has not written in 10+ days
 scores the maximum on it. **Silence is not distress.** A person on holiday, on
-leave, or simply busy will accrue risk for saying nothing. Never treat a risk
-score driven mostly by inactivity as evidence of a problem — open the profile
-and look at which component is carrying it.
+leave, or simply busy will accrue risk for saying nothing.
+
+You do not have to guess which it is. The Employees list shows the top drivers
+under each risk score — "Inactivity (20 pts)", "Negative sentiment (24 pts)" —
+so a score carried by silence is visible at a glance. The API returns the full
+breakdown as `risk_factors`: each component in points, the raw evidence behind
+it (days since last message, complaint signals, trend delta), and how many
+messages it rests on.
+
+### "thin data"
+
+A score computed from fewer than 5 messages in 30 days is tagged **thin data**
+in the list and `low_confidence` in the API. Treat those as a prompt to talk to
+the person, never as a finding. Scores stabilise around 20+ messages.
 
 ## Top emotion
 
@@ -86,8 +97,9 @@ vivid message can dominate a light week.
   heuristics over chat text. They are prompts to check in with a person, never
   a diagnosis.
 - **Volume-sensitive.** All averages are unweighted, so someone who sends 3
-  messages and someone who sends 300 are scored on the same scale with very
-  different confidence. The API does not currently expose that confidence.
+  messages and someone who sends 300 are scored on the same scale. The
+  difference is now visible — `risk_confidence`, `risk_calibration_band` and
+  the "thin data" tag — but the score itself is not adjusted for it.
 - **English-tuned.** The lexicon and prompts are English. Sentiment for
   employees writing in other languages, or heavy code-switching, is less
   reliable. See task.txt for the multilingual work.

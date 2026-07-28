@@ -16,6 +16,75 @@ from sqlalchemy.types import Date
 
 from ..models.conversation import Conversation, Message, MessageSender, SentimentLabel
 from ..core.time import utcnow_naive
+
+#: Human labels for the stored risk components, in the order HR reads them.
+_RISK_FACTOR_LABELS = {
+    "negativity": "Negative sentiment",
+    "inactivity": "Inactivity",
+    "complaints": "Complaint signals",
+    "trend_drop": "Falling trend",
+    "sustained_negative_bump": "Sustained negative pattern",
+}
+
+#: Below this many messages in 30 days, a score is a guess dressed as a number.
+_LOW_CONFIDENCE_MESSAGES = 5
+_HIGH_CONFIDENCE_MESSAGES = 20
+
+
+def _explain_risk(risk_factors: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Turn stored risk components into something HR can act on.
+
+    Returns the top contributors in points, plus how much data the score rests
+    on. A risk score of 46 built entirely from "hasn't messaged in two weeks"
+    means something completely different from one built from repeated distress,
+    and the number alone cannot tell them apart.
+    """
+    empty = {
+        "top_factors": [],
+        "confidence": 0.0,
+        "band": "low_confidence",
+        "factors": None,
+    }
+    if not isinstance(risk_factors, dict):
+        return empty
+
+    contributions = risk_factors.get("contributions")
+    if not isinstance(contributions, dict):
+        return empty
+
+    ranked = sorted(
+        ((k, float(v or 0)) for k, v in contributions.items()),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )
+    top = [
+        f"{_RISK_FACTOR_LABELS.get(name, name)} ({value:.0f} pts)"
+        for name, value in ranked
+        if value > 0
+    ][:3]
+
+    messages_30d = 0
+    confidence_block = risk_factors.get("confidence")
+    if isinstance(confidence_block, dict):
+        try:
+            messages_30d = int(confidence_block.get("messages_30d") or 0)
+        except (TypeError, ValueError):
+            messages_30d = 0
+
+    confidence = min(1.0, messages_30d / float(_HIGH_CONFIDENCE_MESSAGES))
+    if messages_30d < _LOW_CONFIDENCE_MESSAGES:
+        band = "low_confidence"
+    elif messages_30d < _HIGH_CONFIDENCE_MESSAGES:
+        band = "medium_confidence"
+    else:
+        band = "high_confidence"
+
+    return {
+        "top_factors": top,
+        "confidence": round(confidence, 2),
+        "band": band,
+        "factors": risk_factors,
+    }
 from ..models.analytics import MentalHealthScore
 from ..models.chat_feedback import ChatFeedback
 from ..models.department import Department
@@ -569,6 +638,7 @@ def employee_insights_for_hr(db: Session, limit: int = 50) -> List[Dict[str, Any
         sustained_risk_pattern = int(negative_turns_in_window) >= min_sustained
         silent_risk = bool(days_inactive >= 5 and sentiment_pct < 55)
 
+        risk_explained = _explain_risk(getattr(score_row, "risk_factors", None) if score_row else None)
         dlabel = dept_name.get(str(u.department_id), "General") if u.department_id else "General"
         narrative = [
             f"Sentiment {'declining' if (score_row and score_row.trend_label == 'down') else 'stable'} ({int(long_avg)} -> {int(short_avg)})",
@@ -589,9 +659,10 @@ def employee_insights_for_hr(db: Session, limit: int = 50) -> List[Dict[str, Any
                 "last_active": _human_last_active(last_ts),
                 "department": dlabel,
                 "mental_health_score": mental_health_score,
-                "risk_confidence": 0.0,
-                "risk_calibration_band": "low_confidence",
-                "risk_top_factors": [],
+                "risk_confidence": risk_explained["confidence"],
+                "risk_calibration_band": risk_explained["band"],
+                "risk_top_factors": risk_explained["top_factors"],
+                "risk_factors": risk_explained["factors"],
                 "trend": score_row.trend_label if score_row else "stable",
                 "delta": int(score_row.trend_delta) if score_row else 0,
                 "risk_label": "High" if risk >= 70 else ("Medium" if risk >= 40 else "Low"),
