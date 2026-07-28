@@ -81,6 +81,7 @@ type AnalyticsAugment = {
   longTermTrend?: number;
   riskTopFactors?: string[];
   riskConfidenceBand?: string;
+  sentimentLastUpdatedAt?: string;
 };
 
 function analyticsAugmentFromRow(row: Record<string, unknown>): AnalyticsAugment {
@@ -110,6 +111,9 @@ function analyticsAugmentFromRow(row: Record<string, unknown>): AnalyticsAugment
       ? row.risk_top_factors.map(String).filter(Boolean)
       : undefined,
     riskConfidenceBand: row.risk_calibration_band ? String(row.risk_calibration_band) : undefined,
+    sentimentLastUpdatedAt: row.sentiment_last_updated_at
+      ? String(row.sentiment_last_updated_at)
+      : undefined,
   };
 }
 
@@ -124,6 +128,7 @@ function mergeAnalyticsIntoEmployee(base: Employee, aug: AnalyticsAugment): Empl
     riskLabel: aug.riskLabel,
     riskTopFactors: aug.riskTopFactors?.length ? aug.riskTopFactors : undefined,
     riskConfidenceBand: aug.riskConfidenceBand,
+    sentimentLastUpdatedAt: aug.sentimentLastUpdatedAt,
     narrative: aug.narrative,
     spikeAlert: aug.spikeAlert || undefined,
     silentRisk: aug.silentRisk || undefined,

@@ -11,6 +11,20 @@ import { cn } from "@/lib/utils";
 
 type DirectoryError = "none" | "auth" | "forbidden" | "network";
 
+/** How stale a sentiment score is, or null when it is recent enough to trust.
+ *
+ *  Only surfaced past a week: below that the noise would outweigh the signal,
+ *  and someone who simply had a quiet few days is not a data-quality problem. */
+function staleLabel(iso?: string): string | null {
+  if (!iso) return null;
+  const updated = new Date(iso).getTime();
+  if (Number.isNaN(updated)) return null;
+  const days = Math.floor((Date.now() - updated) / 86_400_000);
+  if (days < 7) return null;
+  if (days < 30) return `${days}d stale`;
+  return "30d+ stale";
+}
+
 export default function Employees() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [list, setList] = useState<Employee[]>([]);
@@ -283,6 +297,17 @@ export default function Employees() {
                       title="Few messages in the last 30 days — treat this score as indicative only"
                     >
                       thin data
+                    </span>
+                  ) : null}
+                  {/* A score that has not moved in weeks reads exactly like a
+                      fresh one. Say when it last changed so nobody acts on a
+                      number that predates whatever they are reacting to. */}
+                  {staleLabel(e.sentimentLastUpdatedAt) ? (
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-border bg-secondary/60 text-muted-foreground"
+                      title={`Sentiment last updated ${new Date(e.sentimentLastUpdatedAt as string).toLocaleString()}`}
+                    >
+                      {staleLabel(e.sentimentLastUpdatedAt)}
                     </span>
                   ) : null}
                 </div>

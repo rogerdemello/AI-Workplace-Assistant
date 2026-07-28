@@ -262,6 +262,20 @@ class SentimentPipelineService:
         analysis_source: Optional[str] = None,
         conversation_id: Optional[UUID] = None,
     ) -> None:
+        # One log per message. Reprocessing happens for good reasons — a
+        # reconcile run, a replayed failure, a retried request — and without
+        # this guard each one silently adds a second row and skews the
+        # employee's score. A partial unique index backs it at the database
+        # level; this check keeps the common case from raising.
+        if message_id is not None:
+            already = (
+                self.db.query(SentimentLog.id)
+                .filter(SentimentLog.message_id == message_id)
+                .first()
+            )
+            if already:
+                return
+
         row = SentimentLog(
             employee_id=employee_id,
             conversation_id=conversation_id,
