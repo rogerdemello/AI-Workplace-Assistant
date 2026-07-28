@@ -154,7 +154,7 @@ C. Quality & operations
        stores only a SHA-256 of the body. Masking gained international and
        Indian mobile formats (the most likely real number in this deployment),
        and the credit-card pattern no longer bites chunks out of UUIDs.
-   [~] Data retention — position documented, NOT enforced.
+   [~] Data retention — mechanism built, periods still unset.
        backend/docs/DATA_RETENTION.md enumerates every table holding employee
        free text, proposes periods, and states plainly that nothing is deleted
        today. Open gaps recorded there: no deletion job, no subject-access or
