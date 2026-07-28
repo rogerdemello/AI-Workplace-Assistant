@@ -15,11 +15,13 @@ jobs:
   backend-tests:
     name: Backend tests (pytest)
     runs-on: ubuntu-latest
-    # The suite takes ~32 min on a clean install. Most of that is tenacity
-    # retrying LLM calls against an unreachable mock endpoint before falling
-    # back to the lexicon path. The real fix is stubbing the client in tests
-    # rather than letting each retry burn its timeout; until then this needs
-    # headroom, because 15 min killed the run before it finished.
+    # Runs in ~5 min here. It takes ~32 min locally, where the endpoint resolves
+    # and 401s slowly so every retry burns its full timeout; CI fails DNS
+    # instantly. Headroom kept for slow runners — one run took 11 min.
+    #
+    # Deliberately NOT using AI_USE_MOCK: a number of these tests assert the
+    # lexicon and keyword fallback paths, which only execute when the model is
+    # unavailable. A working stub would quietly stop exercising them.
     timeout-minutes: 45
     defaults:
       run:
@@ -180,6 +182,12 @@ jobs:
           SECRET_KEY: ci-e2e-secret
           FAST_CHAT_MODE: "true"
           ENABLE_ALERT_BACKGROUND: "false"
+          # Serve model calls from the in-process stub. Without this the
+          # endpoint above is unreachable, so every turn pays a full retry
+          # timeout before falling back — which made this suite slow and
+          # timing-sensitive, and hid a real message-dropping bug for several
+          # runs behind that latency.
+          AI_USE_MOCK: "true"
         run: python -m scripts.seed_dummy_users
 
       # playwright.config.ts expects the API on :8099 and the app on :8080 and
@@ -195,6 +203,12 @@ jobs:
           SECRET_KEY: ci-e2e-secret
           FAST_CHAT_MODE: "true"
           ENABLE_ALERT_BACKGROUND: "false"
+          # Serve model calls from the in-process stub. Without this the
+          # endpoint above is unreachable, so every turn pays a full retry
+          # timeout before falling back — which made this suite slow and
+          # timing-sensitive, and hid a real message-dropping bug for several
+          # runs behind that latency.
+          AI_USE_MOCK: "true"
         run: |
           nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8099 > server.log 2>&1 &
           for i in $(seq 1 60); do
