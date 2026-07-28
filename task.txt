@@ -40,6 +40,15 @@ Resolved since the last review:
       min seen locally — a local run hits a reachable endpoint that 401s slowly,
       where CI fails DNS instantly). Timeout raised to 45 min for headroom.
 
+Found while building risk explainability:
+   [ ] db/schema.sql is a stale partial snapshot — 9 of 53 model tables are
+       missing from it (audit_logs, automation_rules, employee_scores,
+       hr_notifications, message_signals, offboarding_tasks, sentiment_logs,
+       ticket_action_logs, whatsapp_links). Bootstrapping from it gives a
+       database where chat works and every HR dashboard is empty. Marked
+       REFERENCE ONLY with a pointer to alembic; regenerating it properly from
+       a live pg_dump is still open.
+
 Still blocking a confident production claim:
    1. Nothing has been verified against a realistic environment. Every "it
       works" here means tests and a local stack, never staging under load.

@@ -1,3 +1,20 @@
+-- ============================================================================
+-- REFERENCE ONLY — this file does NOT produce a working database.
+--
+-- Alembic is the single source of truth for the Postgres schema. Provision with:
+--     cd backend && alembic upgrade head
+--
+-- This snapshot is missing 9 tables that were added by migrations and never
+-- back-ported here, including the core of the sentiment product:
+--     audit_logs, automation_rules, employee_scores, hr_notifications,
+--     message_signals, offboarding_tasks, sentiment_logs, ticket_action_logs,
+--     whatsapp_links
+--
+-- Bootstrapping from this file alone gives you a database where chat works and
+-- every HR dashboard is empty, which is a confusing way to discover the
+-- problem. Keep it for reading table shapes; do not run it as an install path.
+-- ============================================================================
+
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
