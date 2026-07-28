@@ -57,10 +57,29 @@ labels rather than words, and are what the HR dashboards actually read.
 Deleting chat text while keeping derived signals is the key move: HR keeps the
 trends it acts on, and the employee's actual words stop existing.
 
+## How to apply a period
+
+Set the relevant `RETENTION_*_DAYS` (all default to 0 = keep forever), then:
+
+```bash
+cd backend
+python -m scripts.apply_retention --dry-run   # always start here
+python -m scripts.apply_retention --confirm
+```
+
+The script refuses to run without an explicit flag, and does nothing at all
+while every period is 0. It is deliberately **not** scheduled: deletion is
+irreversible and lands on employee disclosures, so it stays a decision someone
+makes, having read what it is about to remove.
+
+Expiring chat text does not disturb the dashboards — scores are computed from
+`sentiment_logs`, not from the messages. Expiring `sentiment_logs` does shift
+the aggregates on their next recompute, which is the intended trade.
+
 ## Known gaps to close
 
-1. **No deletion job exists.** Retention is unenforced. Nothing here is true
-   until something implements it.
+1. **Periods are still unset**, so nothing is deleted today. The mechanism
+   exists; the numbers are a business decision.
 2. **Proactive nudges now persist to chat history.** The delivery fix means
    HR decisions and check-ins are written into `conversations`. Correct for
    delivery, but it widened this surface and should be in scope.
