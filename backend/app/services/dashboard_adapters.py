@@ -50,6 +50,7 @@ class EmployeeInsightContract(BaseModel):
     risk_confidence: Optional[float] = None
     risk_calibration_band: Optional[str] = None
     risk_top_factors: Optional[List[str]] = None
+    risk_factors: Optional[Dict[str, Any]] = None
     trend: str = "stable"
     delta: int = 0
     risk_label: str = "Low"

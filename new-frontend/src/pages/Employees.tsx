@@ -264,6 +264,29 @@ export default function Employees() {
                 {" · "}
                 Δ {e.sentimentDelta ?? 0}
               </div>
+              {/* What drives the risk score. A score built mostly from silence
+                  is a different situation from one built from distress, and the
+                  number alone cannot tell them apart. */}
+              {e.riskTopFactors?.length ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1">
+                  {e.riskTopFactors.slice(0, 2).map((factor) => (
+                    <span
+                      key={factor}
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-border bg-secondary/60 text-muted-foreground"
+                    >
+                      {factor}
+                    </span>
+                  ))}
+                  {e.riskConfidenceBand === "low_confidence" ? (
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-warning/30 bg-warning/10 text-warning"
+                      title="Few messages in the last 30 days — treat this score as indicative only"
+                    >
+                      thin data
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="mt-3 h-1 rounded-full bg-secondary overflow-hidden">
                 <div className={cn("h-full rounded-full transition-all",
                   e.riskScore > 60 ? "bg-danger" : e.riskScore > 35 ? "bg-warning" : "bg-emerald"

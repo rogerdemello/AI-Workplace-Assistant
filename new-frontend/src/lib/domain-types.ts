@@ -18,6 +18,10 @@ export interface Employee {
   riskLabel?: "Low" | "Medium" | "High";
   /** Story bullets from analytics (sentiment, complaints, topic, engagement). */
   narrative?: string[];
+  /** Ranked drivers of riskScore, e.g. "Inactivity (20 pts)". */
+  riskTopFactors?: string[];
+  /** How much data the score rests on: low/medium/high_confidence. */
+  riskConfidenceBand?: string;
   spikeAlert?: boolean;
   silentRisk?: boolean;
   topTopic?: string;
