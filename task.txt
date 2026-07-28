@@ -91,15 +91,15 @@ A2. Composer dropping sends — no longer silent; queueing still open
        Whoever picks this up: reproduce at CI speed, not locally. Every broken
        version passed locally.
 
-A2b. Composer dropping sends silently — FIXED
-   [x] Sends issued while a reply was in flight were swallowed: the input had
-       already cleared, no request went out, nothing told the employee. Now
-       queued and dispatched in order; the button is no longer disabled on
-       transient state; the input clears only on acceptance.
-       Confirmed by measurement, not assertion: the appointment spec needed a
-       retry that fired on most turns (~56s -> ~2.9m). With the queue the retry
-       never fires and the spec is back to 57s, so the retry was removed.
-       Covered by new-frontend/e2e/composer.spec.ts.
+A2b. Composer dropping sends SILENTLY — FIXED
+   [x] The harm was the silence, not the refusal: a send during an in-flight
+       reply cleared the input and dropped the message, so the employee saw an
+       empty box and assumed it had gone. The input now clears only on the path
+       that actually dispatches, so a refused send leaves the text visible.
+       The button also no longer disables on transient isSending/isTyping, so
+       it cannot flip disabled between a press and the click dispatching.
+       Covered by new-frontend/e2e/composer.spec.ts, which asserts a second
+       message typed during a reply is either sent or still in the box.
 
 B. HR visibility & trust
    [x] Screens -> APIs documented: backend/docs/SCREEN_API_MAP.md (all 27
