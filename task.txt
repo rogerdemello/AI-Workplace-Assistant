@@ -77,8 +77,15 @@ A. Sentiment & signals (core product)
        one is the production default (CHAT_DEFER_NONBLOCKING_SIDE_EFFECTS), so
        instrumenting only the sync path would have left failures invisible.
    [ ] Verify in staging under real traffic. Not done — needs an environment.
-   [ ] Backfill/reconcile recent messages into sentiment_logs where missing
-       (optional; only if prod had partial coverage).
+   [x] Backfill/reconcile: scripts/reconcile_sentiment.py finds user messages
+       with no sentiment log and reprocesses them. Safe to re-run — writes are
+       idempotent now (application guard plus a partial unique index on
+       sentiment_logs.message_id), so a replay cannot double-count and skew a
+       score. Doubles as the replay path for anything that shows up in
+       sentiment_pipeline_failures_total; previously a failed write lost the
+       signal permanently while the message itself was saved.
+       Checked against production: 0 user messages in the last 30 days, so
+       there is currently nothing to repair there.
    [ ] HR dashboard smoke test after real chat traffic: confirm sentiment_score,
        trend, risk and top_emotion move. Covered by integration tests, not by
        an observed staging run.
