@@ -336,13 +336,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         return;
       }
       
-      // Debounce: prevent rapid-fire sends within 500ms
-      const now = Date.now();
-      if (now - lastSentAtRef.current < 500) {
-        console.warn("[Chat] Message blocked: debounce");
-        return;
+      // Space out rapid-fire sends — but wait, never discard. Returning here
+      // dropped the message outright, and because the composer had already
+      // cleared the input the employee saw an empty box and assumed it had
+      // gone. That is the silent loss this whole area keeps producing: the
+      // send is refused somewhere the caller cannot see.
+      //
+      // It only bites when turns arrive within 500ms of each other, which is
+      // why it reproduced in CI and never locally — a detail worth keeping in
+      // mind for anything else timing-sensitive here.
+      const sinceLastSend = Date.now() - lastSentAtRef.current;
+      if (sinceLastSend < 500) {
+        await new Promise((resolve) => setTimeout(resolve, 500 - sinceLastSend));
       }
-      lastSentAtRef.current = now;
+      lastSentAtRef.current = Date.now();
       setIsSending(true);
       
       lastActivityRef.current = Date.now();
