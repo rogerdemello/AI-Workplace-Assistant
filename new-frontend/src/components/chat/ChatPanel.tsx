@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Sparkles, X, Maximize2, Minimize2, ChevronDown, Paperclip, MessageSquarePlus, Mail } from "lucide-react";
@@ -59,11 +59,32 @@ export function ChatPanel() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isTyping]);
 
+  /** Live view of `isSending` for code that must not read a stale closure. */
+  const sendingRef = useRef(false);
   useEffect(() => {
-    if (isSending || !chatReady) return;
+    sendingRef.current = isSending;
+  }, [isSending]);
+
+  /** Send the next queued turn, if any and if nothing is already in flight.
+   *
+   *  Called both from the effect below and directly by handleSend. Draining
+   *  only from the effect strands messages: handleSend can enqueue *after* the
+   *  effect's last run, and since nothing changes afterwards the effect never
+   *  fires again and the turn sits in the queue forever. That silently loses a
+   *  message, which is the exact failure the queue exists to prevent. */
+  const drainQueue = useCallback(() => {
+    if (sendingRef.current || !chatReady) return;
     const next = queuedRef.current.shift();
-    if (next) void send(next.text, next.attachment);
-  }, [isSending, chatReady, send]);
+    if (!next) return;
+    // Claim the slot before awaiting so a second drain in the same tick cannot
+    // dispatch a third turn concurrently.
+    sendingRef.current = true;
+    void send(next.text, next.attachment);
+  }, [chatReady, send]);
+
+  useEffect(() => {
+    if (!isSending) drainQueue();
+  }, [isSending, drainQueue]);
 
   if (mode === "minimized") return null;
 
@@ -84,11 +105,12 @@ export function ChatPanel() {
     setInput("");
     setSelectedFile(null);
 
-    if (isSending) {
-      queuedRef.current.push({ text: payload, attachment });
-      return;
-    }
-    void send(payload, attachment);
+    // Always enqueue, then drain synchronously. Deciding here whether to send
+    // directly would read `isSending` from this render's closure, which can be
+    // stale by the time the key is pressed — and a wrong answer either strands
+    // the turn or double-sends it.
+    queuedRef.current.push({ text: payload, attachment });
+    drainQueue();
   };
 
   return (
