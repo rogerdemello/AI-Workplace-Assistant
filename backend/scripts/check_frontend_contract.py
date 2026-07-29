@@ -10,7 +10,8 @@ from __future__ import annotations
 import json, re, sys, urllib.request
 from pathlib import Path
 
-FRONTEND = Path("E:/Infeedo AI clone/new-frontend/src")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND = REPO_ROOT / "new-frontend" / "src"
 BASE = "http://127.0.0.1:8099"
 
 # Match string/template literals starting with /api/v1 or /hr.

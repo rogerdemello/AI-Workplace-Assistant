@@ -37,8 +37,8 @@ def get_capabilities() -> CapabilitySet:
 def parse_whatsapp_user_map(raw: str) -> Dict[str, str]:
     """
     Supports JSON map or comma-separated pairs:
-    - JSON: {"+911234":"employee1@infeedo.ai"}
-    - CSV: +911234=employee1@infeedo.ai,+919999=hr1@infeedo.ai
+    - JSON: {"+911234":"employee1@example.com"}
+    - CSV: +911234=employee1@example.com,+919999=hr1@example.com
     """
     text = (raw or "").strip()
     if not text:
