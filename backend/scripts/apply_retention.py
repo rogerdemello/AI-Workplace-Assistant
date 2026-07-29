@@ -16,7 +16,7 @@ Usage::
     python -m scripts.apply_retention --dry-run     # always start here
     python -m scripts.apply_retention --confirm
 
-Periods come from settings (see backend/docs/DATA_RETENTION.md):
+Periods come from settings (see docs/DATA_RETENTION.md):
 
     RETENTION_CHAT_MESSAGES_DAYS        what employees typed
     RETENTION_SENTIMENT_LOGS_DAYS       derived per-message scores

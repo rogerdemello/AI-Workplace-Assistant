@@ -17,7 +17,7 @@ python -m pytest `
   -q --tb=line
 
 Write-Host "== Frontend production build =="
-Set-Location (Join-Path $Root "new-frontend")
+Set-Location (Join-Path $Root "frontend")
 npm run build
 
 Write-Host "OK: sentiment sign-off automated checks passed."

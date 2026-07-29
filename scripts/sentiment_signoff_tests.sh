@@ -18,7 +18,7 @@ python -m pytest \
   -q --tb=line
 
 echo "== Frontend production build =="
-cd "$ROOT/new-frontend"
+cd "$ROOT/frontend"
 npm run build
 
 echo "OK: sentiment sign-off automated checks passed."

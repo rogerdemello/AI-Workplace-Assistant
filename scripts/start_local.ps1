@@ -37,7 +37,7 @@ function Test-HttpReady {
 
 $root = (Resolve-Path ".").Path
 $backendDir = Join-Path $root "backend"
-$frontendDir = Join-Path $root "new-frontend"
+$frontendDir = Join-Path $root "frontend"
 $backendUrl = "http://$BackendHost`:$BackendPort"
 $frontendUrl = "http://$FrontendHost`:$FrontendPort"
 

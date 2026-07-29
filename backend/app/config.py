@@ -132,7 +132,7 @@ class Settings(BaseSettings):
     # ---- Data retention -------------------------------------------------
     # All disabled by default (0 = keep forever), because deleting employee
     # records is a decision for the business and its lawyers, not a default
-    # someone inherits from a config file. See backend/docs/DATA_RETENTION.md.
+    # someone inherits from a config file. See docs/DATA_RETENTION.md.
     #
     # The useful shape is to expire the words while keeping the scores: HR
     # keeps the trends it acts on, and what an employee actually typed stops
