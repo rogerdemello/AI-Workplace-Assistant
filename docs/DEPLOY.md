@@ -117,11 +117,11 @@ connections (the tight free-tier pool from dev no longer makes sense):
 
 ## 7. Frontend
 
-Build `new-frontend/` with the production API URL pointing at the Container App
+Build `frontend/` with the production API URL pointing at the Container App
 ingress:
 
 ```bash
-cd new-frontend
+cd frontend
 VITE_API_URL=https://mark-backend.<region>.azurecontainerapps.io npm run build
 ```
 

@@ -33,7 +33,7 @@ services:
   worker:
     # Opt-in Celery worker. Stays idle unless CELERY_BROKER_URL is set on
     # the API container too — without a broker the API runs everything
-    # in-process and this service is just a warm spare. See backend/docs/WORKERS.md.
+    # in-process and this service is just a warm spare. See docs/WORKERS.md.
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -53,7 +53,7 @@ services:
 
   frontend:
     build:
-      context: ./new-frontend
+      context: ./frontend
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
@@ -62,5 +62,5 @@ services:
     depends_on:
       - backend
     volumes:
-      - ./new-frontend:/app
+      - ./frontend:/app
       - /app/node_modules

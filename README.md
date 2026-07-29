@@ -13,12 +13,15 @@ ship as a dedicated deployment per customer.
 
 | Path | Contents |
 |---|---|
-| `backend/` | FastAPI service, SQLAlchemy models, Alembic migrations, multi-agent orchestration, sentiment pipeline, RAG, schedulers, tests |
+| `frontend/` | Vite + React + Tailwind + shadcn/ui app (employee, HR, manager, admin surfaces) |
+| `backend/` | FastAPI service, SQLAlchemy models, multi-agent orchestration, sentiment pipeline, RAG, schedulers |
 | `backend/app/workers/` | Opt-in Celery tasks (sentiment, proactive scans, webhook delivery) |
-| `backend/docs/` | Operator docs — `SSO.md`, `WORKERS.md` |
-| `new-frontend/` | Vite + React + Tailwind + shadcn/ui app (employee, HR, manager, admin surfaces) |
-| `db/` | SQL schema and bootstrap scripts |
-| `scripts/` | Smoke probes and release helpers |
+| `backend/alembic/` | Schema migrations — the only source of schema truth; run `alembic upgrade head` on deploy |
+| `backend/scripts/` | Operational probes, retention, reseed, frontend/backend contract check |
+| `backend/tests/` | pytest suite |
+| `db/` | Bootstrap SQL for a fresh Postgres/Supabase project (`schema.sql`, `init.sql`) |
+| `docs/` | Operator docs — `DEPLOY.md`, `SSO.md`, `WORKERS.md`, `DATA_RETENTION.md`, and `ROADMAP.md` |
+| `scripts/` | Local dev launchers and release smoke helpers (`.ps1` / `.sh`) |
 | `.github/workflows/` | CI (pytest, tsc, vite build, smoke E2E against SQLite) |
 
 ## Capabilities
@@ -72,14 +75,14 @@ ship as a dedicated deployment per customer.
 - **Field-level encryption helper** (`app/core/encryption.py`) — opt-in
   Fernet `EncryptedText` column type for sensitive free-text fields.
 - **SSO** stub (`/api/v1/sso/*`) — interface in place, real
-  implementation guided by `backend/docs/SSO.md`.
+  implementation guided by `docs/SSO.md`.
 - **Schema-drift audit** at boot — warns when the live DB drifts from the
   latest Alembic head instead of silently diverging.
 
 ### Observability & ops
 
-For HR: [what the numbers mean](backend/docs/HR_METRICS.md) and
-[which screen calls which API](backend/docs/SCREEN_API_MAP.md).
+For HR: [what the numbers mean](docs/HR_METRICS.md) and
+[which screen calls which API](docs/SCREEN_API_MAP.md).
 
 - `/healthz` (liveness) and `/readyz` (DB / Redis / Azure OpenAI checks).
 - `/metrics` (HR/admin only) — counters and latency for the sentiment pipeline
@@ -93,7 +96,7 @@ For HR: [what the numbers mean](backend/docs/HR_METRICS.md) and
   `VITE_SENTRY_DSN` to enable.
 - **Opt-in Celery workers** for sentiment, proactive scans, and webhook
   delivery — driven by `CELERY_BROKER_URL`. Without a broker everything
-  runs in-process exactly as before. See `backend/docs/WORKERS.md`.
+  runs in-process exactly as before. See `docs/WORKERS.md`.
 
 ## Tech stack
 
@@ -157,7 +160,7 @@ force `create_all` on Postgres for throwaway environments only.
 ### Frontend
 
 ```bash
-cd new-frontend
+cd frontend
 npm install
 npm run dev
 ```
@@ -185,16 +188,16 @@ celery -A app.workers.celery_app.celery worker -l info -Q default
 ```
 
 Browser end-to-end tests (Playwright) need both servers already running — see
-the header of `new-frontend/playwright.config.ts` for the exact commands:
+the header of `frontend/playwright.config.ts` for the exact commands:
 
 ```bash
 # 1. backend on :8099 (seeded), 2. vite on :8080, then:
-cd new-frontend && npm run test:e2e
+cd frontend && npm run test:e2e
 ```
 
 ```bash
 # Frontend type-check + production build
-cd new-frontend
+cd frontend
 npx tsc --noEmit
 npm run build
 ```

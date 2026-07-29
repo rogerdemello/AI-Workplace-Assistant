@@ -1,6 +1,6 @@
 param(
     [string]$BackendBaseUrl = "http://127.0.0.1:8000",
-    [string]$FrontendDir = "new-frontend",
+    [string]$FrontendDir = "frontend",
     [switch]$SkipBuild
 )
 
