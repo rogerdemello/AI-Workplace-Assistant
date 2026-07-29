@@ -189,7 +189,7 @@ def admin_update_user(
 
     # Capture pre-update values so we can fire lifecycle check-ins on real
     # changes — manager re-assignment / role move are exactly the moments
-    # Infeedo-style listening cares about.
+    # continuous listening cares about.
     old_manager_id = u.manager_id
     old_designation = u.designation
 
