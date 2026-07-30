@@ -117,7 +117,7 @@ class TestPrivacyIsolation:
     def test_chat_snapshot_isolated_by_email(self):
         """Frontend snapshots should be isolated by email."""
         # Frontend uses: `mark-employee-chat:${email}` as localStorage key
-        # This is verified in new-frontend/src/lib/chat-session-storage.ts
+        # This is verified in frontend/src/lib/chat-session-storage.ts
         key1 = f"mark-employee-chat:user1@company.com"
         key2 = f"mark-employee-chat:user2@company.com"
         

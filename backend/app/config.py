@@ -6,6 +6,10 @@ from pathlib import Path
 # Determine project root (parent of backend/)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+#: The shipped placeholder for SECRET_KEY. Anyone with the repository knows it,
+#: so a deployment still using it is one where session tokens can be forged.
+PLACEHOLDER_SECRET_KEY = "your-secret-key-here"
+
 
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:your-password@db.your-project.supabase.co:5432/postgres?sslmode=require"
@@ -24,7 +28,10 @@ class Settings(BaseSettings):
     # AZURE_OPENAI_DEPLOYMENT when empty.
     AZURE_OPENAI_FAST_DEPLOYMENT: str = ""
     AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
-    SECRET_KEY: str = "your-secret-key-here"
+    # Signs every session JWT. The value below is a placeholder that is public
+    # in this repository — it is not a usable default. validate_security_settings()
+    # refuses to start the app while it is still in place; see that function.
+    SECRET_KEY: str = PLACEHOLDER_SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     GOOGLE_CLIENT_ID: str = ""
@@ -132,7 +139,7 @@ class Settings(BaseSettings):
     # ---- Data retention -------------------------------------------------
     # All disabled by default (0 = keep forever), because deleting employee
     # records is a decision for the business and its lawyers, not a default
-    # someone inherits from a config file. See backend/docs/DATA_RETENTION.md.
+    # someone inherits from a config file. See docs/DATA_RETENTION.md.
     #
     # The useful shape is to expire the words while keeping the scores: HR
     # keeps the trends it acts on, and what an employee actually typed stops
@@ -149,6 +156,18 @@ class Settings(BaseSettings):
     SUPABASE_JWT_SECRET: Optional[str] = None
     ALLOW_HEADER_ROLE_AUTH: bool = False
 
+    # ---- Demo login -----------------------------------------------------
+    # POST /api/v1/demo/login is unauthenticated and self-provisioning: it
+    # takes any email, creates the account if missing, and hands back a signed
+    # token. An address containing "hr" gets UserRole.hr, so on a reachable
+    # deployment it is an open door to every HR surface — sentiment, tickets,
+    # /metrics. Nothing in the product calls it; it exists for local demos.
+    #
+    # Off unless explicitly switched on, so forgetting to set it is the safe
+    # outcome rather than the exposed one. The route is not mounted at all
+    # when this is false — see main.py.
+    ENABLE_DEMO_LOGIN: bool = False
+
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
@@ -157,3 +176,37 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+class InsecureConfiguration(RuntimeError):
+    """Raised when a setting would make the running app trivially compromised."""
+
+
+def validate_security_settings(config: Optional[Settings] = None) -> None:
+    """Refuse to run with credentials that are public or absent.
+
+    Called from the application lifespan, so a misconfigured deployment fails
+    at startup with a readable message instead of serving traffic that anyone
+    holding this repository can forge tokens for.
+
+    There is deliberately no escape hatch — no TESTING or DEBUG bypass. A
+    bypass is the thing that ends up set in production. Generating a key is
+    one line:
+
+        python -c "import secrets; print(secrets.token_urlsafe(48))"
+    """
+    config = config or settings
+    secret = (config.SECRET_KEY or "").strip()
+
+    if not secret:
+        raise InsecureConfiguration(
+            "SECRET_KEY is empty. Session tokens cannot be signed. Set it in "
+            "the environment (or .env) before starting the app."
+        )
+    if secret == PLACEHOLDER_SECRET_KEY:
+        raise InsecureConfiguration(
+            "SECRET_KEY is still the placeholder shipped in this repository "
+            f"({PLACEHOLDER_SECRET_KEY!r}). Every session token would be "
+            "forgeable by anyone who has read the source. Generate one with: "
+            'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+        )

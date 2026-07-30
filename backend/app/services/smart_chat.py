@@ -187,7 +187,7 @@ class SmartChatService:
         # IT & equipment
         "laptop": "IT will provide your laptop on your first day. Reach out to #it-help for setup.",
         "equipment": "IT will provide your laptop on your first day. Reach out to #it-help for setup.",
-        "wifi password": "Connect to 'Infeedo-Guest' WiFi. The password changes monthly - ask your neighbor!",
+        "wifi password": "Connect to the guest WiFi network. The password changes monthly - ask your neighbor!",
         "email setup": "Your email should be ready on day 1. Check your inbox for welcome details.",
         
         # Getting started
@@ -198,8 +198,8 @@ class SmartChatService:
         
         # Communication
         "slack": "Join #general, #random, #new-hires, and your team channel. We're very active on Slack!",
-        "how to contact hr": "You can reach HR via the chat bot, email hr@infeedo.com, or post in #hr-questions.",
-        "who do i talk to": "For questions, you can ask me, reach HR at hr@infeedo.com, or post in #hr-questions.",
+        "how to contact hr": "You can reach HR via the chat bot, email your HR team, or post in #hr-questions.",
+        "who do i talk to": "For questions, you can ask me, reach out to your HR team, or post in #hr-questions.",
         
         # Payroll
         "payday": "Payday is the 15th and last day of each month. If it falls on a weekend, you'll get it the Friday before.",

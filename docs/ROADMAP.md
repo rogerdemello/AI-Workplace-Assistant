@@ -52,7 +52,7 @@ Resolved since the last review:
       backend-tests, which assert the lexicon and keyword fallback paths that
       only run when the model is unavailable.
    6. The previously stranded files are committed: .env.example (now documenting
-      all 75 Settings fields) and new-frontend/e2e/, including
+      all 75 Settings fields) and frontend/e2e/, including
       playwright.config.ts and all four specs.
 
 Found while building risk explainability:
@@ -123,11 +123,11 @@ A2b. Composer dropping sends SILENTLY — FIXED
        that actually dispatches, so a refused send leaves the text visible.
        The button also no longer disables on transient isSending/isTyping, so
        it cannot flip disabled between a press and the click dispatching.
-       Covered by new-frontend/e2e/composer.spec.ts, which asserts a second
+       Covered by frontend/e2e/composer.spec.ts, which asserts a second
        message typed during a reply is either sent or still in the box.
 
 B. HR visibility & trust
-   [x] Screens -> APIs documented: backend/docs/SCREEN_API_MAP.md (all 27
+   [x] Screens -> APIs documented: docs/SCREEN_API_MAP.md (all 27
        endpoints verified against app/api/v1, plus the debugging traps: chat
        uses the streaming endpoint, transcripts restore from local storage,
        conversation_id must be threaded, the two SSE streams are role-specific).
@@ -163,7 +163,7 @@ C. Quality & operations
        Indian mobile formats (the most likely real number in this deployment),
        and the credit-card pattern no longer bites chunks out of UUIDs.
    [~] Data retention — mechanism built, periods still unset.
-       backend/docs/DATA_RETENTION.md enumerates every table holding employee
+       docs/DATA_RETENTION.md enumerates every table holding employee
        free text, proposes periods, and states plainly that nothing is deleted
        today. Open gaps recorded there: no deletion job, no subject-access or
        erasure path, anonymous tickets still store user_id (anonymity is
@@ -220,7 +220,7 @@ Load testing
    for the chat hot path; there is no agreed budget yet — set one.
 
 Browser e2e (needs both servers up; see playwright.config.ts header)
-   cd new-frontend && npm run test:e2e
+   cd frontend && npm run test:e2e
 
 Safe rollout
    1. Feature flag optional: “strict_pipeline” logging only before full enforce.
@@ -269,12 +269,12 @@ Performance
 
 Phase 1 — Solidify (0–4 weeks)
    - [x] End-to-end tests: chat → DB → HR API. Backend + browser both cover it.
-   - [x] Staging sign-off checklist: backend/docs/STAGING_SIGNOFF.md, with a
+   - [x] Staging sign-off checklist: docs/STAGING_SIGNOFF.md, with a
          pass condition per item and a note that the load test needs an agreed
          p95 target beforehand or it cannot fail.
    - [~] Observability baseline: /metrics exists; no dashboards or alerting
          built on top of it yet.
-   - [x] HR admin doc: backend/docs/HR_METRICS.md — defines sentiment score,
+   - [x] HR admin doc: docs/HR_METRICS.md — defines sentiment score,
          trend, risk and top emotion from the code that computes them, and is
          explicit about where they mislead (50 = no history not neutral; the
          10-point guardrail lags reality downward; silence accrues 20% of risk;
