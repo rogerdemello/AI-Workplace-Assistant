@@ -16,6 +16,10 @@ through.
       here means the migration step was skipped.
 - [ ] `/healthz` 200, `/readyz` reports DB, Redis and Azure OpenAI all healthy.
 - [ ] `DB_CREATE_ALL` is unset or false.
+- [ ] `SECRET_KEY` is a generated value, not the repo placeholder. The app will
+      not boot otherwise — if it started, this passed.
+- [ ] `POST /api/v1/demo/login` returns **404**. Any other status means
+      `ENABLE_DEMO_LOGIN` is on and anyone can mint an HR token.
 
 ## 1. The core loop actually works
 

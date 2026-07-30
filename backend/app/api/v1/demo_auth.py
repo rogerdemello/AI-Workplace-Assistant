@@ -1,3 +1,12 @@
+"""Unauthenticated demo login — mounted only when ENABLE_DEMO_LOGIN is true.
+
+Kept for local demos and nothing else. The endpoint accepts any email, creates
+the account if it does not exist, and returns a signed token; an address
+containing "hr" is given UserRole.hr. On a reachable deployment that is an
+unauthenticated path to every HR surface, so main.py only mounts this router
+when the flag is explicitly set. Do not add a caller in the product.
+"""
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel

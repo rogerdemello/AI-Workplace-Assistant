@@ -110,6 +110,12 @@ connections (the tight free-tier pool from dev no longer makes sense):
   Supabase free-tier. With a larger Supabase plan and intra-region connections,
   raise to 10/20 to keep more warm connections in hand.
 - `--reload` must **not** be in the production `command` (compose dev only).
+- `SECRET_KEY` must be a generated value — startup aborts on the placeholder,
+  so a container that keeps restarting with `InsecureConfiguration` in its logs
+  is telling you the secret never arrived.
+- `ENABLE_DEMO_LOGIN` must be unset or false. It mounts an unauthenticated
+  endpoint that hands out HR-role tokens; `curl -X POST .../api/v1/demo/login`
+  should return 404.
 - Apply pending alembic migrations on each deploy:
   `python -m alembic upgrade head` as a pre-start step or release hook.
 - Run an `alembic current` check at boot — `alembic/env.py` now reads the same
