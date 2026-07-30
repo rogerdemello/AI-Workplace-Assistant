@@ -18,6 +18,8 @@ API_DIR = pathlib.Path(__file__).resolve().parent.parent / "app" / "api" / "v1"
 INTENTIONALLY_PUBLIC = {
     ("auth.py", "POST", "/register"),
     ("auth.py", "POST", "/login"),
+    # Unauthenticated by nature — which is why it is not mounted unless
+    # ENABLE_DEMO_LOGIN is set. See test_demo_login_is_not_mounted_by_default.
     ("demo_auth.py", "POST", "/login"),
     # Inbound provider webhooks — authenticated by signature, not a session.
     ("email.py", "POST", "/inbound"),
@@ -107,6 +109,35 @@ def test_contact_details_are_masked_for_logs(raw):
 )
 def test_masking_does_not_eat_ordinary_log_lines(raw):
     assert mask_pii(raw) == raw
+
+
+def test_demo_login_is_not_mounted_by_default(client):
+    """The demo endpoint has to be switched on deliberately.
+
+    It authenticates nobody: any email gets a signed token, and an email
+    containing "hr" gets an HR-role one — enough to read sentiment, tickets
+    and /metrics on a deployment that left it mounted.
+    """
+    from app.config import Settings
+
+    assert Settings().ENABLE_DEMO_LOGIN is False
+    response = client.post("/api/v1/demo/login", json={"email": "anyone-hr@example.com"})
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.parametrize("value", ["your-secret-key-here", "", "   "])
+def test_startup_refuses_a_public_or_missing_secret_key(value):
+    """Booting with the shipped placeholder means forgeable sessions."""
+    from app.config import InsecureConfiguration, Settings, validate_security_settings
+
+    with pytest.raises(InsecureConfiguration):
+        validate_security_settings(Settings(SECRET_KEY=value))
+
+
+def test_startup_accepts_a_real_secret_key():
+    from app.config import Settings, validate_security_settings
+
+    validate_security_settings(Settings(SECRET_KEY="Zq3n-5RmT8xW2hJc0vLpYbG7dK4sA1eU"))
 
 
 def test_ai_mock_is_off_by_default():

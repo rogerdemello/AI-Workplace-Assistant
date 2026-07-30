@@ -208,6 +208,8 @@ Most of MARK is feature-flagged. Some non-obvious ones:
 
 | Env var | Effect |
 |---|---|
+| `SECRET_KEY` | **Required.** Signs session tokens; the app refuses to start if it is empty or still the repo placeholder |
+| `ENABLE_DEMO_LOGIN` | Mounts the unauthenticated `POST /api/v1/demo/login` (issues HR-role tokens on request). Off by default; local demos only |
 | `CELERY_BROKER_URL` | When set, sentiment / proactive / webhook tasks dispatch to Celery workers; otherwise they run inline |
 | `MARK_ENCRYPTION_KEY` | URL-safe base64 Fernet key for `EncryptedText` columns; module is no-op when unset |
 | `SENTRY_DSN` / `VITE_SENTRY_DSN` | Enables Sentry capture on backend / frontend; both fail-open when absent |

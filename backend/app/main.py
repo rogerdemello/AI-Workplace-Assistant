@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import asyncio
 from typing import Optional
 
-from .config import settings
+from .config import settings, validate_security_settings
 from .core import metrics
 from .core.feature_flags import get_feature_flags
 from .core.observability import init_sentry
@@ -116,6 +116,12 @@ async def _alert_background_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up HR Assistant API...")
+
+    # Before anything else: refuse to serve traffic with a public signing key.
+    # Raising here aborts startup — a deployment that skipped SECRET_KEY fails
+    # loudly at boot instead of quietly accepting forged sessions.
+    validate_security_settings()
+
     is_testing = os.getenv("TESTING", "0").lower() in ("1", "true", "yes")
     flags = get_feature_flags()
     
@@ -349,7 +355,16 @@ async def readiness_probe():
 
 # Include API routers with versioned routes
 app.include_router(auth_router, prefix="/api/v1")
-app.include_router(demo_auth_router, prefix="/api/v1")
+# Demo login is opt-in and off by default: it mints a signed token for any
+# email with no authentication, and grants HR to anything containing "hr".
+# See ENABLE_DEMO_LOGIN in config.py.
+if settings.ENABLE_DEMO_LOGIN:
+    logger.warning(
+        "ENABLE_DEMO_LOGIN is on: POST /api/v1/demo/login will issue tokens to "
+        "unauthenticated callers, including HR-role tokens. Local demos only — "
+        "never expose this on a deployment that holds real employee data."
+    )
+    app.include_router(demo_auth_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(ai_router, prefix="/api/v1")
 app.include_router(rag_router, prefix="/api/v1")
